@@ -26,6 +26,11 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 
 ## 演示
 
+
+https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
+
+
+
 ## 部署
 
 ### 环境要求
