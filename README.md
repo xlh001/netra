@@ -69,7 +69,7 @@ GeoIP 的两个 `.mmdb` 文件 需自行获取，[MaxMind 官网](https://www.ma
 
 ### systemd 常驻运行
 
-1. 获取 `netra` 二进制——从 Releases 页面下载。创建工作目录，把 `netra` 二进制和 `GeoIP` 的两个 `.mmdb` 文件都放进去
+1. 获取 `netra` 二进制——从 [Releases](https://github.com/xxddpac/netra/releases) 页面下载。创建工作目录，把 `netra` 二进制和 `GeoIP` 的两个 `.mmdb` 文件都放进去
 
    ```ini
    mkdir -p /opt/netra
