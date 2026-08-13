@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 42 42" width="32" height="32">
+  <style>
+    .sweep { transform-origin: 21px 21px; animation: sweep 6s linear infinite; }
+    @keyframes sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+  <circle cx="21" cy="21" r="19" fill="none" stroke="rgba(170,180,195,0.30)" stroke-width="1.5" />
+  <circle cx="21" cy="21" r="12" fill="none" stroke="rgba(170,180,195,0.30)" stroke-width="1.5" />
+  <circle cx="21" cy="21" r="4" fill="#35e0ff" />
+  <path class="sweep" d="M 21 2 A 19 19 0 0 1 38 14" fill="none" stroke="#35e0ff" stroke-width="2" stroke-linecap="round" />
+</svg>
