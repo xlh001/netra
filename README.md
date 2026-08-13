@@ -3,6 +3,15 @@
   Netra
 </h2>
 
+<p align="center">
+  <img src="https://img.shields.io/github/license/xxddpac/netra" alt="License" />
+  <img src="https://img.shields.io/github/go-mod/go-version/xxddpac/netra" alt="Go Version" />
+  <img src="https://img.shields.io/github/v/tag/xxddpac/netra" alt="Version" />
+  <img src="https://img.shields.io/github/last-commit/xxddpac/netra" alt="Last Commit" />
+  <img src="https://img.shields.io/badge/platform-linux-blue" alt="Platform" />
+  <img src="https://img.shields.io/github/stars/xxddpac/netra?style=social" alt="Stars" />
+</p>
+
 <p align="center">One binary. Observe your network with eBPF. Ask AI. Extend with MCP.</p>
 
 ## 介绍
@@ -35,8 +44,6 @@ https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
 
 ### 环境要求
 
----
-
 - Linux 内核，建议 4.18 及以上（`uname -r`）；版本越新，原生 XDP 的驱动兼容性通常越好。
 - 是否可以用原生 XDP，取决于内核版本、网卡驱动、硬件收发队列余量，三者缺一不可，判断步骤：
   1. `ethtool -i <iface>` 查看网卡驱动（如 ixgbe、i40e、mlx5、virtio_net 等），主流驱动大多支持原生 XDP，但具体表现因驱动而异；
@@ -45,8 +52,6 @@ https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
 - **运行环境需要 glibc >= 2.28**（`ldd --version`）—— DuckDB/CGO 引入动态链接依赖。
 
 ### 启动参数
-
----
 
 | 参数              | 必填  | 默认值        | 说明                                |
 |-----------------|-----|------------|-----------------------------------|
@@ -63,8 +68,6 @@ https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
 GeoIP 的两个 `.mmdb` 文件 需自行获取，[MaxMind 官网](https://www.maxmind.com/en/geolite2/signup)注册账号下载或第三方镜像仓库 [P3TERX/GeoLite.mmdb](https://github.com/P3TERX/GeoLite.mmdb) 免注册下载，放到 netra 二进制同目录下即可自动识别，不需要显式传参；放在别的位置才需要用 `-geoip-db`/`-geoip-asn-db` 指定绝对路径。
 
 ### systemd 常驻运行
-
----
 
 1. 获取 `netra` 二进制——从 Releases 页面下载。创建工作目录，把 `netra` 二进制和 `GeoIP` 的两个 `.mmdb` 文件都放进去
 
@@ -119,6 +122,4 @@ cd ..
 CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o netra .
 ```
 
-## 开源协议
-
-[LICENSE](LICENSE)
+<sub>如果这个项目对你有帮助，可以[请作者喝杯咖啡](docs/sponsor.jpg) ☕。</sub>
