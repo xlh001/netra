@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/github/stars/xxddpac/netra?style=social" alt="Stars" />
 </p>
 
-<p align="center">One binary. Observe your network with eBPF. Ask AI. Extend with MCP.</p>
+<p align="center">One binary. Observe your network with eBPF. Ask AI. Extend with MCP</p>
 
 ## 介绍
 
@@ -20,7 +20,9 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 
 ## 为什么选择 eBPF
 
-传统抓包（libpcap、tcpdump、AF_PACKET 等）每个包都要拷贝到用户态再逐包解析，开销随**包速率**线性增长，大流量场景下一旦用户态处理跟不上或内核缓冲区被打满，就会丢包。Netra 把 XDP 程序挂在网卡驱动的收包路径上，原生模式下甚至运行在内核分配 `sk_buff` 之前——采集、解包、统计全程留在内核态，用户态只需要读取已经聚合好的结果。这意味着 CPU 开销不再随包速率线性增长，高包速率场景下也不会因为用户态处理跟不上而丢包。性能大幅提升。
+传统抓包（libpcap、tcpdump、AF_PACKET 等）每个包都要拷贝到用户态再逐包解析，开销随**包速率**线性增长，大流量场景下一旦用户态处理跟不上或内核缓冲区被打满，就会丢包。Netra 把 XDP 程序挂在网卡驱动的收包路径上，原生模式下甚至运行在内核分配 `sk_buff` 之前——采集、解包、统计全程留在内核态，用户态只需要读取已经聚合好的结果。这意味着 CPU 开销不再随包速率线性增长，高包速率场景下也不会因为用户态处理跟不上而丢包。
+基于 XDP 内核态收包路径本身的量级上限，性能方面处理10Gbps、1Mpps 理论上会留有充分余量，后续将补上Netra实际压测数据。
+
 ## 支持的功能
 
 - **实时大屏**：总流量、协议占比、流量趋势、Top IP/端口/域名排名、目标国家分布、世界地图、内网拓扑图。
@@ -28,7 +30,7 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 - **威胁感知**：扫描/DDoS/单 IP 大流量三类启发式检测，命中可推送到企业微信/钉钉/飞书，启用 AI 后附带自然语言解读。
 - **域名识别**：被动解析 TLS SNI。
 - **GeoIP 富化**：接入 MaxMind GeoLite2，标注公网 IP 的国家与归属组织。
-- **持久化**：SQLite + DuckDB 混合存储。
+- **持久化**：SQLite + DuckDB 混合存储——低频的配置/用户/告警等数据走 SQLite，高频的流量历史（IP/端口/域名/五元组）走 DuckDB，按时间片滚动存为 Parquet 文件。得益于 DuckDB 的列式存储，千万级历史数据的查询也能稳定在秒级。
 - **AI 助手**：可接入任意 OpenAI 协议兼容模型，基于真实历史数据回答问题。
 - **MCP 扩展**：可接入外部 MCP Server，AI 助手对话时可按需调用其提供的工具，支持 HTTP/stdio 两种传输方式及 Basic/Bearer 认证。
 - **Kafka**：启用后异步推送流量至队列，自由消费使用。

@@ -615,19 +615,31 @@ func (t *tsStore) queryPorts(cutoff, until int64) ([]aggRow[tsPortKey], error) {
 // own bounded top-K (see distributedTopKMargin) and the results merged in
 // Go, instead of pulling every matching group from every source.
 
-func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit, offset int) ([]flowAggRow, int, error) {
+func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit, offset int, wantTotal bool) ([]flowAggRow, int, error) {
 	callStart := time.Now()
 	files, err := t.listSealedFiles(tblFlow, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s: %w", tblFlow, err)
 	}
 
+	where := "ts >= ? AND ts <= ?"
+	if ipFilter != nil {
+		where += fmt.Sprintf(" AND (src_ip = %d OR dst_ip = %d)", *ipFilter, *ipFilter)
+	}
+	countSQL := func(source string) string {
+		return fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto)`, source, where)
+	}
+
 	if len(files) == 0 {
-		where := "ts >= ? AND ts <= ?"
-		if ipFilter != nil {
-			where += fmt.Sprintf(" AND (src_ip = %d OR dst_ip = %d)", *ipFilter, *ipFilter)
-		}
-		q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), COUNT(*) OVER()
+		// COUNT(*) OVER() deliberately kept out of the row query below: it's
+		// a global window function, so DuckDB must fully materialize the
+		// GROUP BY before it can compute it, which blocks the bounded
+		// top-N/heap-sort optimization for ORDER BY ... LIMIT. On flow_samples
+		// specifically (near-1:1 row-to-group cardinality thanks to ephemeral
+		// source ports) that turned an 8s query into 1.6s in testing. The
+		// total, when actually needed, is fetched via its own lightweight
+		// query instead.
+		q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain)
 			FROM %s WHERE %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
 			ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`, tblFlow, where)
 
@@ -640,13 +652,12 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		if err != nil {
 			return nil, 0, fmt.Errorf("query hot flow_samples: %w", err)
 		}
-		defer rows.Close()
 		var out []flowAggRow
-		total := 0
 		for rows.Next() {
 			var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
 			var domain sql.NullString
-			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &total); err != nil {
+			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain); err != nil {
+				rows.Close()
 				return nil, 0, err
 			}
 			out = append(out, flowAggRow{
@@ -658,31 +669,38 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String,
 			})
 		}
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return nil, 0, rowsErr
+		}
+
+		total := 0
+		if wantTotal {
+			if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&total); err != nil {
+				return nil, 0, fmt.Errorf("count hot flow_samples: %w", err)
+			}
+		}
 		log.Printf("tsstore: queryFlowsLimited FAST path window=%ds lockWait=%v query+scan=%v total=%d rows=%d overall=%v",
 			(until-cutoff), lockWait, time.Since(queryStart), total, len(out), time.Since(callStart))
-		return out, total, rows.Err()
+		return out, total, nil
 	}
 
 	slowStart := time.Now()
 
 	buildSQL := func(source string) string {
-		where := "ts >= ? AND ts <= ?"
-		if ipFilter != nil {
-			where += fmt.Sprintf(" AND (src_ip = %d OR dst_ip = %d)", *ipFilter, *ipFilter)
-		}
-		return fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), COUNT(*) OVER()
+		return fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain)
 			FROM %s WHERE %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
 			ORDER BY SUM(bytes) DESC LIMIT ?`, source, where)
 	}
-	scan := func(rows *sql.Rows) ([]flowAggRow, int, error) {
+	scan := func(rows *sql.Rows) ([]flowAggRow, error) {
 		defer rows.Close()
 		var out []flowAggRow
-		total := 0
 		for rows.Next() {
 			var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
 			var domain sql.NullString
-			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &total); err != nil {
-				return nil, 0, err
+			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain); err != nil {
+				return nil, err
 			}
 			out = append(out, flowAggRow{
 				Key: flowKey{
@@ -693,7 +711,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String,
 			})
 		}
-		return out, total, rows.Err()
+		return out, rows.Err()
 	}
 
 	fetchK := limit + offset + distributedTopKMargin
@@ -702,16 +720,25 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
-	sealedRowsSQL, err := scratch.Query(buildSQL("read_parquet("+parquetFileList(files)+")"), cutoff, until, fetchK)
+	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
+	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), cutoff, until, fetchK)
 	if err != nil {
 		scratch.Close()
 		return nil, 0, fmt.Errorf("query sealed flow_samples: %w", err)
 	}
-	sealedRows, sealedTotal, err := scan(sealedRowsSQL)
-	scratch.Close()
+	sealedRows, err := scan(sealedRowsSQL)
 	if err != nil {
+		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed flow_samples: %w", err)
 	}
+	sealedTotal := 0
+	if wantTotal {
+		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
+			scratch.Close()
+			return nil, 0, fmt.Errorf("count sealed flow_samples: %w", err)
+		}
+	}
+	scratch.Close()
 
 	t.mu.RLock()
 	hotRowsSQL, err := t.hotDB.Query(buildSQL(tblFlow), cutoff, until, fetchK)
@@ -719,11 +746,19 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("query hot flow_samples: %w", err)
 	}
-	hotRows, hotTotal, err := scan(hotRowsSQL)
-	t.mu.RUnlock()
+	hotRows, err := scan(hotRowsSQL)
 	if err != nil {
+		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot flow_samples: %w", err)
 	}
+	hotTotal := 0
+	if wantTotal {
+		if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&hotTotal); err != nil {
+			t.mu.RUnlock()
+			return nil, 0, fmt.Errorf("count hot flow_samples: %w", err)
+		}
+	}
+	t.mu.RUnlock()
 
 	merged := mergeFlowAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
@@ -733,48 +768,61 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
-func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int) ([]aggRow[uint32], int, error) {
+func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]aggRow[uint32], int, error) {
 	files, err := t.listSealedFiles(tblIP, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s: %w", tblIP, err)
 	}
 
+	countSQL := func(source string) string {
+		return fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE ts >= ? AND ts <= ? GROUP BY ip)`, source)
+	}
+
 	if len(files) == 0 {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
-		rows, err := t.hotDB.Query(`SELECT ip, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM ip_samples
+		rows, err := t.hotDB.Query(`SELECT ip, SUM(packets), SUM(bytes) FROM ip_samples
 			WHERE ts >= ? AND ts <= ? GROUP BY ip ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`, cutoff, until, limit, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("query hot ip_samples: %w", err)
 		}
-		defer rows.Close()
 		var out []aggRow[uint32]
-		total := 0
 		for rows.Next() {
 			var ip, packets, bytes int64
-			if err := rows.Scan(&ip, &packets, &bytes, &total); err != nil {
+			if err := rows.Scan(&ip, &packets, &bytes); err != nil {
+				rows.Close()
 				return nil, 0, err
 			}
 			out = append(out, aggRow[uint32]{Key: uint32(ip), Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return nil, 0, rowsErr
+		}
+		total := 0
+		if wantTotal {
+			if err := t.hotDB.QueryRow(countSQL(tblIP), cutoff, until).Scan(&total); err != nil {
+				return nil, 0, fmt.Errorf("count hot ip_samples: %w", err)
+			}
+		}
+		return out, total, nil
 	}
 
 	buildSQL := func(source string) string {
-		return fmt.Sprintf(`SELECT ip, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM %s WHERE ts >= ? AND ts <= ? GROUP BY ip ORDER BY SUM(bytes) DESC LIMIT ?`, source)
+		return fmt.Sprintf(`SELECT ip, SUM(packets), SUM(bytes) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY ip ORDER BY SUM(bytes) DESC LIMIT ?`, source)
 	}
-	scan := func(rows *sql.Rows) ([]aggRow[uint32], int, error) {
+	scan := func(rows *sql.Rows) ([]aggRow[uint32], error) {
 		defer rows.Close()
 		var out []aggRow[uint32]
-		total := 0
 		for rows.Next() {
 			var ip, packets, bytes int64
-			if err := rows.Scan(&ip, &packets, &bytes, &total); err != nil {
-				return nil, 0, err
+			if err := rows.Scan(&ip, &packets, &bytes); err != nil {
+				return nil, err
 			}
 			out = append(out, aggRow[uint32]{Key: uint32(ip), Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		return out, rows.Err()
 	}
 
 	fetchK := limit + offset + distributedTopKMargin
@@ -783,16 +831,25 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int) ([]agg
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
-	sealedRowsSQL, err := scratch.Query(buildSQL("read_parquet("+parquetFileList(files)+")"), cutoff, until, fetchK)
+	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
+	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), cutoff, until, fetchK)
 	if err != nil {
 		scratch.Close()
 		return nil, 0, fmt.Errorf("query sealed ip_samples: %w", err)
 	}
-	sealedRows, sealedTotal, err := scan(sealedRowsSQL)
-	scratch.Close()
+	sealedRows, err := scan(sealedRowsSQL)
 	if err != nil {
+		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed ip_samples: %w", err)
 	}
+	sealedTotal := 0
+	if wantTotal {
+		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
+			scratch.Close()
+			return nil, 0, fmt.Errorf("count sealed ip_samples: %w", err)
+		}
+	}
+	scratch.Close()
 
 	t.mu.RLock()
 	hotRowsSQL, err := t.hotDB.Query(buildSQL(tblIP), cutoff, until, fetchK)
@@ -800,11 +857,19 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int) ([]agg
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("query hot ip_samples: %w", err)
 	}
-	hotRows, hotTotal, err := scan(hotRowsSQL)
-	t.mu.RUnlock()
+	hotRows, err := scan(hotRowsSQL)
 	if err != nil {
+		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot ip_samples: %w", err)
 	}
+	hotTotal := 0
+	if wantTotal {
+		if err := t.hotDB.QueryRow(countSQL(tblIP), cutoff, until).Scan(&hotTotal); err != nil {
+			t.mu.RUnlock()
+			return nil, 0, fmt.Errorf("count hot ip_samples: %w", err)
+		}
+	}
+	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
@@ -812,48 +877,61 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int) ([]agg
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
-func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int) ([]aggRow[tsPortKey], int, error) {
+func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]aggRow[tsPortKey], int, error) {
 	files, err := t.listSealedFiles(tblPort, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s: %w", tblPort, err)
 	}
 
+	countSQL := func(source string) string {
+		return fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port)`, source)
+	}
+
 	if len(files) == 0 {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
-		rows, err := t.hotDB.Query(`SELECT proto, port, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM port_samples
+		rows, err := t.hotDB.Query(`SELECT proto, port, SUM(packets), SUM(bytes) FROM port_samples
 			WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`, cutoff, until, limit, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("query hot port_samples: %w", err)
 		}
-		defer rows.Close()
 		var out []aggRow[tsPortKey]
-		total := 0
 		for rows.Next() {
 			var proto, port, packets, bytes int64
-			if err := rows.Scan(&proto, &port, &packets, &bytes, &total); err != nil {
+			if err := rows.Scan(&proto, &port, &packets, &bytes); err != nil {
+				rows.Close()
 				return nil, 0, err
 			}
 			out = append(out, aggRow[tsPortKey]{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return nil, 0, rowsErr
+		}
+		total := 0
+		if wantTotal {
+			if err := t.hotDB.QueryRow(countSQL(tblPort), cutoff, until).Scan(&total); err != nil {
+				return nil, 0, fmt.Errorf("count hot port_samples: %w", err)
+			}
+		}
+		return out, total, nil
 	}
 
 	buildSQL := func(source string) string {
-		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ?`, source)
+		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ?`, source)
 	}
-	scan := func(rows *sql.Rows) ([]aggRow[tsPortKey], int, error) {
+	scan := func(rows *sql.Rows) ([]aggRow[tsPortKey], error) {
 		defer rows.Close()
 		var out []aggRow[tsPortKey]
-		total := 0
 		for rows.Next() {
 			var proto, port, packets, bytes int64
-			if err := rows.Scan(&proto, &port, &packets, &bytes, &total); err != nil {
-				return nil, 0, err
+			if err := rows.Scan(&proto, &port, &packets, &bytes); err != nil {
+				return nil, err
 			}
 			out = append(out, aggRow[tsPortKey]{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		return out, rows.Err()
 	}
 
 	fetchK := limit + offset + distributedTopKMargin
@@ -862,16 +940,25 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int) ([]a
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
-	sealedRowsSQL, err := scratch.Query(buildSQL("read_parquet("+parquetFileList(files)+")"), cutoff, until, fetchK)
+	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
+	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), cutoff, until, fetchK)
 	if err != nil {
 		scratch.Close()
 		return nil, 0, fmt.Errorf("query sealed port_samples: %w", err)
 	}
-	sealedRows, sealedTotal, err := scan(sealedRowsSQL)
-	scratch.Close()
+	sealedRows, err := scan(sealedRowsSQL)
 	if err != nil {
+		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed port_samples: %w", err)
 	}
+	sealedTotal := 0
+	if wantTotal {
+		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
+			scratch.Close()
+			return nil, 0, fmt.Errorf("count sealed port_samples: %w", err)
+		}
+	}
+	scratch.Close()
 
 	t.mu.RLock()
 	hotRowsSQL, err := t.hotDB.Query(buildSQL(tblPort), cutoff, until, fetchK)
@@ -879,11 +966,19 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int) ([]a
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("query hot port_samples: %w", err)
 	}
-	hotRows, hotTotal, err := scan(hotRowsSQL)
-	t.mu.RUnlock()
+	hotRows, err := scan(hotRowsSQL)
 	if err != nil {
+		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot port_samples: %w", err)
 	}
+	hotTotal := 0
+	if wantTotal {
+		if err := t.hotDB.QueryRow(countSQL(tblPort), cutoff, until).Scan(&hotTotal); err != nil {
+			t.mu.RUnlock()
+			return nil, 0, fmt.Errorf("count hot port_samples: %w", err)
+		}
+	}
+	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
@@ -895,22 +990,31 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int) ([]a
 // (unlike the IP/port cases, domain is a plain VARCHAR column so this
 // doesn't hit the packed-integer LIKE limitation), so this stays on the
 // SQL-pushdown fast path regardless of whether filter is set.
-func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit, offset int) ([]aggRow[string], int, error) {
+func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit, offset int, wantTotal bool) ([]aggRow[string], int, error) {
 	files, err := t.listSealedFiles(tblFlow, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s (domains): %w", tblFlow, err)
 	}
 
-	if len(files) == 0 {
-		where := "ts >= ? AND ts <= ? AND domain IS NOT NULL AND domain != ''"
-		args := []any{cutoff, until}
+	where := "ts >= ? AND ts <= ? AND domain IS NOT NULL AND domain != ''"
+	if filter != "" {
+		where += " AND domain LIKE ?"
+	}
+	countSQL := func(source string) string {
+		return fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s GROUP BY domain)`, source, where)
+	}
+	countArgs := func(cutoff, until int64) []any {
+		a := []any{cutoff, until}
 		if filter != "" {
-			where += " AND domain LIKE ?"
-			args = append(args, "%"+filter+"%")
+			a = append(a, "%"+filter+"%")
 		}
-		args = append(args, limit, offset)
+		return a
+	}
 
-		q := `SELECT domain, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM flow_samples
+	if len(files) == 0 {
+		args := append(countArgs(cutoff, until), limit, offset)
+
+		q := `SELECT domain, SUM(packets), SUM(bytes) FROM flow_samples
 			WHERE ` + where + ` GROUP BY domain ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`
 
 		t.mu.RLock()
@@ -919,47 +1023,48 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 		if err != nil {
 			return nil, 0, fmt.Errorf("query hot flow_samples (domains): %w", err)
 		}
-		defer rows.Close()
 		var out []aggRow[string]
-		total := 0
 		for rows.Next() {
 			var domain string
 			var packets, bytes int64
-			if err := rows.Scan(&domain, &packets, &bytes, &total); err != nil {
+			if err := rows.Scan(&domain, &packets, &bytes); err != nil {
+				rows.Close()
 				return nil, 0, err
 			}
 			out = append(out, aggRow[string]{Key: domain, Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return nil, 0, rowsErr
+		}
+		total := 0
+		if wantTotal {
+			if err := t.hotDB.QueryRow(countSQL(tblFlow), countArgs(cutoff, until)...).Scan(&total); err != nil {
+				return nil, 0, fmt.Errorf("count hot flow_samples (domains): %w", err)
+			}
+		}
+		return out, total, nil
 	}
 
 	buildSQL := func(source string) string {
-		where := "ts >= ? AND ts <= ? AND domain IS NOT NULL AND domain != ''"
-		if filter != "" {
-			where += " AND domain LIKE ?"
-		}
-		return fmt.Sprintf(`SELECT domain, SUM(packets), SUM(bytes), COUNT(*) OVER() FROM %s WHERE %s GROUP BY domain ORDER BY SUM(bytes) DESC LIMIT ?`, source, where)
+		return fmt.Sprintf(`SELECT domain, SUM(packets), SUM(bytes) FROM %s WHERE %s GROUP BY domain ORDER BY SUM(bytes) DESC LIMIT ?`, source, where)
 	}
 	buildArgs := func(cutoff, until int64, fetchK int) []any {
-		a := []any{cutoff, until}
-		if filter != "" {
-			a = append(a, "%"+filter+"%")
-		}
-		return append(a, fetchK)
+		return append(countArgs(cutoff, until), fetchK)
 	}
-	scan := func(rows *sql.Rows) ([]aggRow[string], int, error) {
+	scan := func(rows *sql.Rows) ([]aggRow[string], error) {
 		defer rows.Close()
 		var out []aggRow[string]
-		total := 0
 		for rows.Next() {
 			var domain string
 			var packets, bytes int64
-			if err := rows.Scan(&domain, &packets, &bytes, &total); err != nil {
-				return nil, 0, err
+			if err := rows.Scan(&domain, &packets, &bytes); err != nil {
+				return nil, err
 			}
 			out = append(out, aggRow[string]{Key: domain, Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
-		return out, total, rows.Err()
+		return out, rows.Err()
 	}
 
 	fetchK := limit + offset + distributedTopKMargin
@@ -968,16 +1073,25 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
-	sealedRowsSQL, err := scratch.Query(buildSQL("read_parquet("+parquetFileList(files)+")"), buildArgs(cutoff, until, fetchK)...)
+	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
+	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), buildArgs(cutoff, until, fetchK)...)
 	if err != nil {
 		scratch.Close()
 		return nil, 0, fmt.Errorf("query sealed flow_samples (domains): %w", err)
 	}
-	sealedRows, sealedTotal, err := scan(sealedRowsSQL)
-	scratch.Close()
+	sealedRows, err := scan(sealedRowsSQL)
 	if err != nil {
+		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed flow_samples (domains): %w", err)
 	}
+	sealedTotal := 0
+	if wantTotal {
+		if err := scratch.QueryRow(countSQL(sealedSource), countArgs(cutoff, until)...).Scan(&sealedTotal); err != nil {
+			scratch.Close()
+			return nil, 0, fmt.Errorf("count sealed flow_samples (domains): %w", err)
+		}
+	}
+	scratch.Close()
 
 	t.mu.RLock()
 	hotRowsSQL, err := t.hotDB.Query(buildSQL(tblFlow), buildArgs(cutoff, until, fetchK)...)
@@ -985,11 +1099,19 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("query hot flow_samples (domains): %w", err)
 	}
-	hotRows, hotTotal, err := scan(hotRowsSQL)
-	t.mu.RUnlock()
+	hotRows, err := scan(hotRowsSQL)
 	if err != nil {
+		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot flow_samples (domains): %w", err)
 	}
+	hotTotal := 0
+	if wantTotal {
+		if err := t.hotDB.QueryRow(countSQL(tblFlow), countArgs(cutoff, until)...).Scan(&hotTotal); err != nil {
+			t.mu.RUnlock()
+			return nil, 0, fmt.Errorf("count hot flow_samples (domains): %w", err)
+		}
+	}
+	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })

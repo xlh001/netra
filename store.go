@@ -1391,7 +1391,7 @@ func (s *Store) queryBucketSummary(cutoff, until int64) (protoBytes, protoPacket
 }
 
 func (s *Store) queryTopFlows(cutoff, until int64, limit int) ([]FlowStat, error) {
-	rows, _, err := s.ts.queryFlowsLimited(cutoff, until, nil, limit, 0)
+	rows, _, err := s.ts.queryFlowsLimited(cutoff, until, nil, limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query flows: %w", err)
 	}
@@ -1409,7 +1409,7 @@ func (s *Store) queryTopFlows(cutoff, until int64, limit int) ([]FlowStat, error
 }
 
 func (s *Store) queryTopIPs(cutoff, until int64, limit int) ([]IPStat, error) {
-	rows, _, err := s.ts.queryIPsLimited(cutoff, until, limit, 0)
+	rows, _, err := s.ts.queryIPsLimited(cutoff, until, limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query ips: %w", err)
 	}
@@ -1421,7 +1421,7 @@ func (s *Store) queryTopIPs(cutoff, until int64, limit int) ([]IPStat, error) {
 }
 
 func (s *Store) queryTopPorts(cutoff, until int64, limit int) ([]PortStat, error) {
-	rows, _, err := s.ts.queryPortsLimited(cutoff, until, limit, 0)
+	rows, _, err := s.ts.queryPortsLimited(cutoff, until, limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query ports: %w", err)
 	}
@@ -1445,7 +1445,7 @@ func (s *Store) QueryIPsPaged(from, to time.Time, page, pageSize int, filter str
 	var total int
 	var err error
 	if filter == "" {
-		rows, total, err = s.ts.queryIPsLimited(cutoff, upper, pageSize, page*pageSize)
+		rows, total, err = s.ts.queryIPsLimited(cutoff, upper, pageSize, page*pageSize, true)
 	} else {
 		// ip is a packed-integer column, can't push a substring LIKE down
 		// to SQL -- pull everything, filter/sort/paginate in Go, same as
@@ -1492,7 +1492,7 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 	var total int
 	var err error
 	if filter == "" {
-		pageRows, total, err = s.ts.queryPortsLimited(cutoff, upper, pageSize, page*pageSize)
+		pageRows, total, err = s.ts.queryPortsLimited(cutoff, upper, pageSize, page*pageSize, true)
 	} else {
 		// filter matches against the formatted "proto/port service" text,
 		// not a column DuckDB can push a LIKE into directly -- pull
@@ -1555,7 +1555,7 @@ func paginateSlice[T any](items []T, page, pageSize int) []T {
 }
 
 func (s *Store) queryTopDomains(cutoff, until int64, limit int) ([]DomainStat, error) {
-	rows, _, err := s.ts.queryDomainsLimited(cutoff, until, "", limit, 0)
+	rows, _, err := s.ts.queryDomainsLimited(cutoff, until, "", limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query domains: %w", err)
 	}
@@ -1575,7 +1575,7 @@ func (s *Store) QueryDomainsPaged(from, to time.Time, page, pageSize int, filter
 		pageSize = 50
 	}
 
-	rows, total, err := s.ts.queryDomainsLimited(cutoff, upper, filter, pageSize, page*pageSize)
+	rows, total, err := s.ts.queryDomainsLimited(cutoff, upper, filter, pageSize, page*pageSize, true)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query domains: %w", err)
 	}
@@ -1719,7 +1719,7 @@ func (s *Store) QueryFlowRate(from, to time.Time) (FlowRate, error) {
 // QueryTopIPsInRange is a thin wrapper around tsStore's already-validated
 // bounded-top-K query, used by /api/geo to pick world-map candidate IPs.
 func (s *Store) QueryTopIPsInRange(from, to time.Time, limit int) ([]IPStat, error) {
-	rows, _, err := s.ts.queryIPsLimited(from.Unix(), to.Unix(), limit, 0)
+	rows, _, err := s.ts.queryIPsLimited(from.Unix(), to.Unix(), limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query top ips: %w", err)
 	}
@@ -1752,7 +1752,7 @@ func (s *Store) QueryFlowsPaged(from, to time.Time, page, pageSize int, filter F
 		ipFilter = &ipNum
 	}
 
-	rows, total, err := s.ts.queryFlowsLimited(cutoff, upper, ipFilter, pageSize, page*pageSize)
+	rows, total, err := s.ts.queryFlowsLimited(cutoff, upper, ipFilter, pageSize, page*pageSize, true)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query flows: %w", err)
 	}
