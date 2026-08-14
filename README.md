@@ -1,7 +1,4 @@
-<h2 align="center">
-  <img src="frontend/public/logo-animated.svg" width="32" height="32" style="vertical-align: middle" alt="" />
-  Netra
-</h2>
+<h2 align="center">Netra</h2>
 
 <p align="center">
   <img src="https://img.shields.io/github/license/xxddpac/netra" alt="License" />

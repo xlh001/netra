@@ -6,6 +6,15 @@ import type { Timeseries } from '../../api/types'
 
 const chartBaseText = { color: '#8b93a0', fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", monospace', fontSize: 10.5 }
 
+const DAY_MS = 24 * 3600 * 1000
+
+function formatAxisTime(ts: number, spanMs: number): string {
+  const d = new Date(ts)
+  if (spanMs <= DAY_MS) return d.toLocaleTimeString('zh-CN', { hour12: false })
+  if (spanMs <= 3 * DAY_MS) return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
 export function TrendChart({ timeseries }: { timeseries: Timeseries | null }) {
   const t = useT()
   const divRef = useRef<HTMLDivElement>(null)
@@ -20,7 +29,8 @@ export function TrendChart({ timeseries }: { timeseries: Timeseries | null }) {
     points.forEach((p) => Object.keys(p.bytes || {}).forEach((k) => protoSet.add(k)))
     const protos = Array.from(protoSet).sort()
 
-    const xData = points.map((p) => new Date(p.time).toLocaleTimeString('zh-CN', { hour12: false }))
+    const spanMs = points.length > 1 ? new Date(points[points.length - 1].time).getTime() - new Date(points[0].time).getTime() : 0
+    const xData = points.map((p) => formatAxisTime(new Date(p.time).getTime(), spanMs))
     const series = protos.map((proto) => ({
       name: proto.toUpperCase(),
       type: 'line' as const,
