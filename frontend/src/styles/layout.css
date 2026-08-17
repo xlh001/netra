@@ -53,7 +53,7 @@
 .ai-page-tabs .ant-tabs-body,
 .ai-page-tabs .ant-tabs-content-active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-.explorer-tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+.explorer-tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
 .explorer-tab-body .ant-input-search { flex: none; }
 
 .explorer-charts-row { flex: none; height: 190px; display: flex; gap: 10px; margin-bottom: 12px; }

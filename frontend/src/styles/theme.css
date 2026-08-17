@@ -121,8 +121,8 @@ body {
 .panel-head-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .panel-head .count { font-family: var(--font-mono); font-size: 10px; color: var(--ink-dim); }
 .panel-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-.panel-body::-webkit-scrollbar { width: 5px; }
-.panel-body::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 3px; }
+.panel-body::-webkit-scrollbar, .explorer-tab-body::-webkit-scrollbar { width: 5px; }
+.panel-body::-webkit-scrollbar-thumb, .explorer-tab-body::-webkit-scrollbar-thumb { background: var(--line-bright); border-radius: 3px; }
 .settings-panel-body .ant-tabs-content-holder { max-width: 720px; }
 
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

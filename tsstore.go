@@ -60,6 +60,62 @@ type tsStore struct {
 	hotDB       *sql.DB
 	hotConn     *sql.Conn
 	appenders   map[string]*duckdb.Appender
+
+	totalMu    sync.Mutex
+	totalCache map[string]totalCacheEntry
+}
+
+// totalCountCacheTTL bounds how long a *Limited query's wantTotal count is
+// reused across calls with the same [cutoff,until,filter]. Paging through
+// the same range/filter (the common case: a user clicking through result
+// pages) would otherwise re-run a full GROUP BY scan over every sealed
+// Parquet file on every single page turn, even though the total can't have
+// changed. A short TTL trades a little staleness (new data written or aged
+// out mid-window) for skipping that duplicate scan.
+const totalCountCacheTTL = 30 * time.Second
+
+type totalCacheEntry struct {
+	total    int
+	computed time.Time
+}
+
+// cachedTotal returns the cached total for key if still fresh, otherwise
+// calls compute, caches, and returns the fresh result.
+func (t *tsStore) cachedTotal(key string, compute func() (int, error)) (int, error) {
+	t.totalMu.Lock()
+	if e, ok := t.totalCache[key]; ok && time.Since(e.computed) < totalCountCacheTTL {
+		t.totalMu.Unlock()
+		return e.total, nil
+	}
+	t.totalMu.Unlock()
+
+	total, err := compute()
+	if err != nil {
+		return 0, err
+	}
+
+	t.totalMu.Lock()
+	t.totalCache[key] = totalCacheEntry{total: total, computed: time.Now()}
+	t.totalMu.Unlock()
+	return total, nil
+}
+
+// totalCacheBucketSeconds buckets cutoff/until into the cache key instead of
+// matching them exactly. A "last N days" window is re-resolved to an
+// absolute [now-N days, now] pair on every single request (see parseRange),
+// so cutoff/until drift by a few seconds on every request even when the
+// user is just paging through the same nominal range -- an exact-match key
+// would never hit the cache at all. Bucketing to <=totalCountCacheTTL keeps
+// same-nominal-range requests landing in the same bucket while still
+// expiring within one TTL window.
+const totalCacheBucketSeconds = 15
+
+func flowTotalCacheKey(cutoff, until int64, ipFilter *uint32) string {
+	ipKey := "nil"
+	if ipFilter != nil {
+		ipKey = strconv.FormatUint(uint64(*ipFilter), 10)
+	}
+	return fmt.Sprintf("flow|%d|%d|%s", cutoff/totalCacheBucketSeconds, until/totalCacheBucketSeconds, ipKey)
 }
 
 func newTSStore(dir string, period time.Duration) (*tsStore, error) {
@@ -75,7 +131,7 @@ func newTSStore(dir string, period time.Duration) (*tsStore, error) {
 		}
 	}
 
-	t := &tsStore{dir: dir, period: period}
+	t := &tsStore{dir: dir, period: period, totalCache: make(map[string]totalCacheEntry)}
 
 	if _, err := os.Stat(t.hotPath()); err == nil {
 		log.Printf("tsstore: found a hot buffer left over from a previous run, sealing it before starting fresh")
@@ -677,8 +733,15 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 
 		total := 0
 		if wantTotal {
-			if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&total); err != nil {
-				return nil, 0, fmt.Errorf("count hot flow_samples: %w", err)
+			total, err = t.cachedTotal(flowTotalCacheKey(cutoff, until, ipFilter), func() (int, error) {
+				var n int
+				if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&n); err != nil {
+					return 0, fmt.Errorf("count hot flow_samples: %w", err)
+				}
+				return n, nil
+			})
+			if err != nil {
+				return nil, 0, err
 			}
 		}
 		log.Printf("tsstore: queryFlowsLimited FAST path window=%ds lockWait=%v query+scan=%v total=%d rows=%d overall=%v",
@@ -731,13 +794,6 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed flow_samples: %w", err)
 	}
-	sealedTotal := 0
-	if wantTotal {
-		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
-			scratch.Close()
-			return nil, 0, fmt.Errorf("count sealed flow_samples: %w", err)
-		}
-	}
 	scratch.Close()
 
 	t.mu.RLock()
@@ -751,18 +807,35 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot flow_samples: %w", err)
 	}
-	hotTotal := 0
+	t.mu.RUnlock()
+
+	total := 0
 	if wantTotal {
-		if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&hotTotal); err != nil {
-			t.mu.RUnlock()
-			return nil, 0, fmt.Errorf("count hot flow_samples: %w", err)
+		total, err = t.cachedTotal(flowTotalCacheKey(cutoff, until, ipFilter), func() (int, error) {
+			scratch2, err := sql.Open("duckdb", "")
+			if err != nil {
+				return 0, fmt.Errorf("open scratch duckdb for count: %w", err)
+			}
+			defer scratch2.Close()
+			var sealedTotal int
+			if err := scratch2.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
+				return 0, fmt.Errorf("count sealed flow_samples: %w", err)
+			}
+			t.mu.RLock()
+			defer t.mu.RUnlock()
+			var hotTotal int
+			if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&hotTotal); err != nil {
+				return 0, fmt.Errorf("count hot flow_samples: %w", err)
+			}
+			return sealedTotal + hotTotal, nil
+		})
+		if err != nil {
+			return nil, 0, err
 		}
 	}
-	t.mu.RUnlock()
 
 	merged := mergeFlowAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
-	total := sealedTotal + hotTotal
 	log.Printf("tsstore: queryFlowsLimited SLOW path (%d sealed file(s), fetchK=%d) window=%ds sealedRows=%d hotRows=%d merged=%d total=%d took=%v",
 		len(files), fetchK, until-cutoff, len(sealedRows), len(hotRows), len(merged), total, time.Since(slowStart))
 	return limitOffsetSlice(merged, limit, offset), total, nil
