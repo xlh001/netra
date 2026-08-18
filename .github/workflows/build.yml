@@ -1,0 +1,117 @@
+name: Build
+
+# Compiles the real, production-shaped netra binary (CGO + DuckDB, built
+# inside a glibc-2.28-matched toolchain) entirely on GitHub's runners.
+# Point: a contributor never needs the local C toolchain / Docker /
+# DuckDB-from-source build described in README's "编译" section just to
+# get a working binary to test against -- push or open a PR, then
+# download the artifact from this run.
+#
+# On every push/PR: build, vet, test, upload the binary as a workflow
+# artifact (for PRs, this is what a reviewer downloads to test before
+# merging -- not a public release).
+# On push to main specifically (i.e. once a PR lands): additionally cuts
+# a new tagged GitHub Release with netra.zip attached, so main always has
+# a corresponding downloadable, versioned build -- no manual tagging step.
+#
+# This does NOT verify the binary actually captures traffic correctly --
+# GitHub's runners have no real NIC and no CAP_BPF, so XDP attach can't be
+# exercised here. It verifies the code compiles, go vet/test pass, and
+# produces a binary built the same way a real release would be.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # only push-to-main's release step needs this
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full tag history, needed to compute the next v-tag below
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Buster/DuckDB toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/buster-builder.Dockerfile
+          tags: netra-builder:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Vet, test, and build netra
+        run: |
+          docker run --rm -v "$PWD":/src -w /src netra-builder:ci bash -c '
+            set -e
+            export CGO_ENABLED=1
+            go mod download
+            LIBDIR="$(go list -m -f "{{.Dir}}" github.com/marcboeker/go-duckdb)/deps/linux_amd64"
+            chmod -R u+w "$LIBDIR"
+            cp /opt/duckdb-lib/libduckdb.a "$LIBDIR/libduckdb.a"
+            go vet ./...
+            go test ./...
+            GOOS=linux GOARCH=amd64 go build -buildvcs=false -o dist/netra .
+          '
+
+      - name: Upload netra binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: netra-linux-amd64
+          path: dist/netra
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Package release zip
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p release
+          cp dist/netra release/netra
+          cd release && zip netra.zip netra
+
+      # Follows the existing vMAJOR.MINOR.PATCH convention (repo's only tag
+      # so far is v1.0.0): find the latest v-tag, bump the patch number by
+      # one. `--sort=-v:refname` is version-aware (v1.0.9 sorts before
+      # v1.0.10), unlike a plain lexical sort.
+      - name: Compute next version tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: version
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            next="v1.0.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "latest tag was $latest, next release will be $next"
+
+      - name: Create release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.next }}
+          name: ${{ steps.version.outputs.next }}
+          files: release/netra.zip
+          generate_release_notes: true
