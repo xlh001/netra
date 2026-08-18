@@ -4,15 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	duckdb "github.com/marcboeker/go-duckdb"
@@ -35,6 +38,21 @@ const (
 // traded for avoiding pulling the full row set into Go, which was the
 // actual production slowdown this was built to fix.
 const distributedTopKMargin = 3000
+
+// maxFetchK bounds how deep any *Limited query is allowed to sort ("jump
+// to last page" turns into a large offset, which turns directly into a
+// large fetchK, which forces an almost-unbounded ORDER BY over the whole
+// source instead of the intended bounded top-K/heap-sort). Confirmed in
+// production: offset near 12.5M on flow_samples produced fetchK≈20M and
+// an 83s query. The frontend now keeps its own pagination sequential-only
+// for the one view (Flows) where this is reachable through the UI, but
+// this is the backend-side guarantee for any caller (a crafted URL/API
+// request) that bypasses that -- rejected fast with a clear error instead
+// of silently running the expensive query. Generous enough that no
+// realistic click-through-every-page session would ever hit it.
+const maxFetchK = 50_000
+
+var errFetchTooDeep = errors.New("requested page is too far into the result set for this range; narrow the time range or filter, or page forward sequentially")
 
 var tsTables = []string{tblFlow, tblIP, tblPort}
 
@@ -63,6 +81,9 @@ type tsStore struct {
 
 	totalMu    sync.Mutex
 	totalCache map[string]totalCacheEntry
+
+	flowFileMu    sync.Mutex
+	flowFileCache map[string]flowFileCacheEntry
 }
 
 // totalCountCacheTTL bounds how long a *Limited query's wantTotal count is
@@ -118,6 +139,243 @@ func flowTotalCacheKey(cutoff, until int64, ipFilter *uint32) string {
 	return fmt.Sprintf("flow|%d|%d|%s", cutoff/totalCacheBucketSeconds, until/totalCacheBucketSeconds, ipKey)
 }
 
+var duckDBMemoryLimitOnce sync.Once
+var duckDBMemoryLimitPragma string
+
+// duckDBMemoryLimit returns the "<N>MB" PRAGMA memory_limit value applied
+// to every DuckDB connection this process opens: 80% of the host's
+// available memory at startup (read once from /proc/meminfo, cached for
+// the process lifetime). This is a safety net, not a performance feature
+// -- without it, a query or seal-time aggregation over a large enough
+// dataset grows DuckDB's working set unbounded and can take the whole
+// process down (confirmed by benchmarking a 500M-row aggregation with no
+// limit set: it forced disk spill and the process was killed). Falls back
+// to no limit (empty string, DuckDB's own default) if /proc/meminfo can't
+// be read.
+func duckDBMemoryLimit() string {
+	duckDBMemoryLimitOnce.Do(func() {
+		available, err := readMemAvailableBytes()
+		if err != nil || available <= 0 {
+			log.Printf("tsstore: could not detect available system memory, DuckDB memory_limit left unset: %v", err)
+			return
+		}
+		budgetMB := available * 8 / 10 / (1024 * 1024)
+		duckDBMemoryLimitPragma = fmt.Sprintf("%dMB", budgetMB)
+		log.Printf("tsstore: DuckDB memory_limit set to %s (80%% of %dMB detected available)", duckDBMemoryLimitPragma, available/(1024*1024))
+	})
+	return duckDBMemoryLimitPragma
+}
+
+func readMemAvailableBytes() (int64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "MemAvailable:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return 0, fmt.Errorf("malformed MemAvailable line: %q", line)
+		}
+		kb, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return kb * 1024, nil
+	}
+	return 0, fmt.Errorf("MemAvailable not found in /proc/meminfo")
+}
+
+// applyMemoryLimit runs the memory_limit pragma against db, logging (not
+// failing) on error since a missing pragma should degrade to "no limit",
+// not break startup/queries outright.
+func applyMemoryLimit(db *sql.DB) {
+	limit := duckDBMemoryLimit()
+	if limit == "" {
+		return
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA memory_limit='%s'`, limit)); err != nil {
+		log.Printf("tsstore: failed to apply memory_limit pragma: %v", err)
+	}
+}
+
+// openScratchDuckDB opens a short-lived in-memory DuckDB connection with
+// the process-wide memory_limit pragma applied. Every ad-hoc scratch
+// connection used to query sealed Parquet files should go through this
+// instead of a bare sql.Open, so none of them can grow unbounded.
+func openScratchDuckDB() (*sql.DB, error) {
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		return nil, err
+	}
+	applyMemoryLimit(db)
+	return db, nil
+}
+
+// flowFileCacheCap bounds how many rows (top-N by bytes) get cached per
+// sealed flow_samples file. Once a file is sealed it's immutable, so its
+// cached top-N never needs to change -- only new files ever add a cache
+// entry. A query can only trust the cache for a file when its own
+// fetchK (see distributedTopKMargin) fits within this cap; deeper
+// pagination than that falls back to a live query for that file, same as
+// today's behavior, just scoped to fewer files.
+const flowFileCacheCap = 10000
+
+type flowFileCacheEntry struct {
+	start, end int64
+	rows       []flowAggRow
+	total      int
+}
+
+// computeFlowFileTopK runs the same GROUP BY .. ORDER BY .. LIMIT query
+// used elsewhere in this file, but scoped to a single sealed Parquet file,
+// plus a separate exact distinct-group COUNT for that same file. Both are
+// safe to cache indefinitely once computed, since a sealed file's content
+// never changes.
+func computeFlowFileTopK(path string, start, end int64) (flowFileCacheEntry, error) {
+	db, err := openScratchDuckDB()
+	if err != nil {
+		return flowFileCacheEntry{}, fmt.Errorf("open scratch duckdb: %w", err)
+	}
+	defer db.Close()
+
+	source := "read_parquet('" + strings.ReplaceAll(filepath.ToSlash(path), "'", "''") + "')"
+	q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain)
+		FROM %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
+		ORDER BY SUM(bytes) DESC LIMIT ?`, source)
+	rows, err := db.Query(q, flowFileCacheCap)
+	if err != nil {
+		return flowFileCacheEntry{}, fmt.Errorf("query file top-k: %w", err)
+	}
+	var out []flowAggRow
+	for rows.Next() {
+		var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
+		var domain sql.NullString
+		if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain); err != nil {
+			rows.Close()
+			return flowFileCacheEntry{}, err
+		}
+		out = append(out, flowAggRow{
+			Key: flowKey{
+				SrcIP: uint32(srcIP), DstIP: uint32(dstIP),
+				SrcPort: uint16(srcPort), DstPort: uint16(dstPort),
+				Proto: uint8(proto),
+			},
+			Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String,
+		})
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		return flowFileCacheEntry{}, rowsErr
+	}
+
+	var total int
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto)`, source)
+	if err := db.QueryRow(countQ).Scan(&total); err != nil {
+		return flowFileCacheEntry{}, fmt.Errorf("count file groups: %w", err)
+	}
+
+	return flowFileCacheEntry{start: start, end: end, rows: out, total: total}, nil
+}
+
+// getFlowFileTopK returns the cached top-K/count for a sealed flow_samples
+// file, computing and caching it on first use if not already present
+// (e.g. right after a restart, before sealAndRotate's eager population has
+// run for older files). Concurrent callers racing to compute the same
+// uncached file will just redo the (bounded, single-file) work twice
+// rather than block each other -- cheap enough not to need a singleflight.
+func (t *tsStore) getFlowFileTopK(path string, start, end int64) (flowFileCacheEntry, error) {
+	t.flowFileMu.Lock()
+	if e, ok := t.flowFileCache[path]; ok {
+		t.flowFileMu.Unlock()
+		return e, nil
+	}
+	t.flowFileMu.Unlock()
+
+	entry, err := computeFlowFileTopK(path, start, end)
+	if err != nil {
+		return flowFileCacheEntry{}, err
+	}
+
+	t.flowFileMu.Lock()
+	t.flowFileCache[path] = entry
+	t.flowFileMu.Unlock()
+	return entry, nil
+}
+
+// warmFlowFileCache eagerly builds the per-file Top-K cache for every
+// flow_samples sealed file already on disk, run once in the background
+// right after startup. Without this, a fresh restart leaves every
+// pre-existing file's cache cold, and the FIRST query touching a wide
+// historical range pays the full rebuild cost inline -- confirmed in
+// production: 142 pre-existing files, 42s on the first 15-day query
+// (~300ms/file, built one at a time, sequentially, inside that request).
+// sealAndRotate's own eager build only covers files sealed AFTER this
+// process started, so it never helps with files that already existed at
+// startup -- this is the other half of that mechanism. Concurrency is
+// bounded so warmup itself doesn't become a resource spike stacked on top
+// of live traffic.
+func (t *tsStore) warmFlowFileCache() {
+	dir := filepath.Join(t.dir, "sealed", tblFlow)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("tsstore: flow file cache warmup: read sealed dir failed: %v", err)
+		}
+		return
+	}
+
+	type warmJob struct {
+		path       string
+		start, end int64
+	}
+	periodSec := int64(t.period / time.Second)
+	var jobs []warmJob
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		start, end, ok := parseSealedRange(e.Name(), periodSec)
+		if !ok {
+			continue
+		}
+		jobs = append(jobs, warmJob{path: filepath.Join(dir, e.Name()), start: start, end: end})
+	}
+	if len(jobs) == 0 {
+		return
+	}
+
+	concurrency := runtime.NumCPU()
+	if concurrency > 8 {
+		concurrency = 8
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	warmStart := time.Now()
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var failed int64
+	for _, j := range jobs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j warmJob) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if _, err := t.getFlowFileTopK(j.path, j.start, j.end); err != nil {
+				atomic.AddInt64(&failed, 1)
+				log.Printf("tsstore: flow file cache warmup failed for %s (will retry lazily on next query): %v", j.path, err)
+			}
+		}(j)
+	}
+	wg.Wait()
+	log.Printf("tsstore: flow file cache warmup done: %d file(s), %d failed, took %v", len(jobs), atomic.LoadInt64(&failed), time.Since(warmStart))
+}
+
 func newTSStore(dir string, period time.Duration) (*tsStore, error) {
 	if period <= 0 {
 		period = time.Hour
@@ -131,7 +389,11 @@ func newTSStore(dir string, period time.Duration) (*tsStore, error) {
 		}
 	}
 
-	t := &tsStore{dir: dir, period: period, totalCache: make(map[string]totalCacheEntry)}
+	t := &tsStore{
+		dir: dir, period: period,
+		totalCache:    make(map[string]totalCacheEntry),
+		flowFileCache: make(map[string]flowFileCacheEntry),
+	}
 
 	if _, err := os.Stat(t.hotPath()); err == nil {
 		log.Printf("tsstore: found a hot buffer left over from a previous run, sealing it before starting fresh")
@@ -143,6 +405,8 @@ func newTSStore(dir string, period time.Duration) (*tsStore, error) {
 	if err := t.openFreshHot(time.Now().Truncate(period)); err != nil {
 		return nil, fmt.Errorf("open hot buffer: %w", err)
 	}
+
+	go t.warmFlowFileCache()
 	return t, nil
 }
 
@@ -163,6 +427,7 @@ func (t *tsStore) recoverLeftoverHot() error {
 	if err != nil {
 		return fmt.Errorf("open leftover hot buffer: %w", err)
 	}
+	applyMemoryLimit(db)
 
 	var minTS, maxTS sql.NullInt64
 	for _, table := range tsTables {
@@ -210,6 +475,7 @@ func (t *tsStore) openFreshHot(periodStart time.Time) error {
 	if err != nil {
 		return fmt.Errorf("open hot buffer: %w", err)
 	}
+	applyMemoryLimit(db)
 	for _, table := range tsTables {
 		if _, err := db.Exec(tsTableDDL[table]); err != nil {
 			db.Close()
@@ -309,6 +575,8 @@ func (t *tsStore) sealAndRotate(newPeriodStart time.Time) error {
 			return fmt.Errorf("close appender %s: %w", table, err)
 		}
 	}
+	var flowSealPath string
+	var flowStart, flowEnd int64
 	for _, table := range tsTables {
 		end := start
 		var maxTS sql.NullInt64
@@ -319,6 +587,23 @@ func (t *tsStore) sealAndRotate(newPeriodStart time.Time) error {
 		if _, err := t.hotDB.Exec(fmt.Sprintf(`COPY %s TO '%s' (FORMAT PARQUET)`, table, sealPath)); err != nil {
 			return fmt.Errorf("seal %s: %w", table, err)
 		}
+		if table == tblFlow {
+			flowSealPath, flowStart, flowEnd = sealPath, start, end
+		}
+	}
+
+	// Populate the new file's Top-K cache in the background rather than
+	// inline here: sealAndRotate holds t.mu for writing, blocking new
+	// ticks, and this file's top-K is only needed the next time a query
+	// actually reaches it -- getFlowFileTopK computes it lazily on demand
+	// if this goroutine hasn't finished (or failed) by then, so this is
+	// purely a best-effort head start, never a correctness dependency.
+	if flowSealPath != "" {
+		go func(path string, s, e int64) {
+			if _, err := t.getFlowFileTopK(path, s, e); err != nil {
+				log.Printf("tsstore: background flow file top-k cache build failed for %s (will retry lazily on next query): %v", path, err)
+			}
+		}(flowSealPath, flowStart, flowEnd)
 	}
 
 	if err := t.hotConn.Close(); err != nil {
@@ -379,6 +664,11 @@ func (t *tsStore) prune(cutoff time.Time) error {
 				path := filepath.Join(dir, e.Name())
 				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 					log.Printf("tsstore: prune %s failed: %v", path, err)
+				}
+				if table == tblFlow {
+					t.flowFileMu.Lock()
+					delete(t.flowFileCache, path)
+					t.flowFileMu.Unlock()
 				}
 			}
 		}
@@ -498,7 +788,7 @@ func querySealedAgg[T any](t *tsStore, table string, buildSQL func(source string
 		return nil, nil
 	}
 
-	scratch, err := sql.Open("duckdb", "")
+	scratch, err := openScratchDuckDB()
 	if err != nil {
 		return nil, fmt.Errorf("open scratch duckdb: %w", err)
 	}
@@ -672,6 +962,9 @@ func (t *tsStore) queryPorts(cutoff, until int64) ([]aggRow[tsPortKey], error) {
 // Go, instead of pulling every matching group from every source.
 
 func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit, offset int, wantTotal bool) ([]flowAggRow, int, error) {
+	if limit+offset > maxFetchK {
+		return nil, 0, errFetchTooDeep
+	}
 	callStart := time.Now()
 	files, err := t.listSealedFiles(tblFlow, cutoff, until)
 	if err != nil {
@@ -779,22 +1072,58 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 
 	fetchK := limit + offset + distributedTopKMargin
 
-	scratch, err := sql.Open("duckdb", "")
-	if err != nil {
-		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
+	// When there's no IP filter, split sealed files into ones we can trust
+	// the per-file cache for (fully inside [cutoff,until], and the cache
+	// holds enough rows to cover fetchK) versus ones that still need a
+	// live, ts-filtered query -- a file only partially overlapping the
+	// requested window (typically at most the first/last file touched)
+	// can't safely use a cache built from that file's FULL range, since
+	// the cached SUM(bytes) per key would include ticks outside the
+	// requested window. An IP filter disables the cache entirely: it's
+	// built unfiltered (top-by-bytes), so a specific IP's flows may not be
+	// in it at all even though they're in the file -- see project notes
+	// on why filtered search can't safely use this cache.
+	var sealedRows []flowAggRow
+	var liveFiles []string
+	var cachedSealedTotal int
+	if ipFilter == nil {
+		periodSec := int64(t.period / time.Second)
+		for _, f := range files {
+			start, end, ok := parseSealedRange(filepath.Base(f), periodSec)
+			fullyContained := ok && start >= cutoff && end <= until
+			if fullyContained && fetchK <= flowFileCacheCap {
+				entry, err := t.getFlowFileTopK(f, start, end)
+				if err != nil {
+					return nil, 0, fmt.Errorf("get cached flow file top-k: %w", err)
+				}
+				sealedRows = append(sealedRows, entry.rows...)
+				cachedSealedTotal += entry.total
+				continue
+			}
+			liveFiles = append(liveFiles, f)
+		}
+	} else {
+		liveFiles = files
 	}
-	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
-	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), cutoff, until, fetchK)
-	if err != nil {
+
+	if len(liveFiles) > 0 {
+		scratch, err := openScratchDuckDB()
+		if err != nil {
+			return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
+		}
+		liveSource := "read_parquet(" + parquetFileList(liveFiles) + ")"
+		rowsSQL, err := scratch.Query(buildSQL(liveSource), cutoff, until, fetchK)
+		if err != nil {
+			scratch.Close()
+			return nil, 0, fmt.Errorf("query sealed flow_samples: %w", err)
+		}
+		liveRows, err := scan(rowsSQL)
 		scratch.Close()
-		return nil, 0, fmt.Errorf("query sealed flow_samples: %w", err)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan sealed flow_samples: %w", err)
+		}
+		sealedRows = append(sealedRows, liveRows...)
 	}
-	sealedRows, err := scan(sealedRowsSQL)
-	if err != nil {
-		scratch.Close()
-		return nil, 0, fmt.Errorf("scan sealed flow_samples: %w", err)
-	}
-	scratch.Close()
 
 	t.mu.RLock()
 	hotRowsSQL, err := t.hotDB.Query(buildSQL(tblFlow), cutoff, until, fetchK)
@@ -812,14 +1141,19 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 	total := 0
 	if wantTotal {
 		total, err = t.cachedTotal(flowTotalCacheKey(cutoff, until, ipFilter), func() (int, error) {
-			scratch2, err := sql.Open("duckdb", "")
-			if err != nil {
-				return 0, fmt.Errorf("open scratch duckdb for count: %w", err)
-			}
-			defer scratch2.Close()
-			var sealedTotal int
-			if err := scratch2.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
-				return 0, fmt.Errorf("count sealed flow_samples: %w", err)
+			sum := cachedSealedTotal
+			if len(liveFiles) > 0 {
+				scratch2, err := openScratchDuckDB()
+				if err != nil {
+					return 0, fmt.Errorf("open scratch duckdb for count: %w", err)
+				}
+				defer scratch2.Close()
+				liveSource := "read_parquet(" + parquetFileList(liveFiles) + ")"
+				var liveTotal int
+				if err := scratch2.QueryRow(countSQL(liveSource), cutoff, until).Scan(&liveTotal); err != nil {
+					return 0, fmt.Errorf("count sealed flow_samples: %w", err)
+				}
+				sum += liveTotal
 			}
 			t.mu.RLock()
 			defer t.mu.RUnlock()
@@ -827,7 +1161,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 			if err := t.hotDB.QueryRow(countSQL(tblFlow), cutoff, until).Scan(&hotTotal); err != nil {
 				return 0, fmt.Errorf("count hot flow_samples: %w", err)
 			}
-			return sealedTotal + hotTotal, nil
+			return sum + hotTotal, nil
 		})
 		if err != nil {
 			return nil, 0, err
@@ -836,12 +1170,15 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 
 	merged := mergeFlowAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
-	log.Printf("tsstore: queryFlowsLimited SLOW path (%d sealed file(s), fetchK=%d) window=%ds sealedRows=%d hotRows=%d merged=%d total=%d took=%v",
-		len(files), fetchK, until-cutoff, len(sealedRows), len(hotRows), len(merged), total, time.Since(slowStart))
+	log.Printf("tsstore: queryFlowsLimited SLOW path (%d sealed file(s), cacheHits=%d liveFiles=%d, fetchK=%d) window=%ds sealedRows=%d hotRows=%d merged=%d total=%d took=%v",
+		len(files), len(files)-len(liveFiles), len(liveFiles), fetchK, until-cutoff, len(sealedRows), len(hotRows), len(merged), total, time.Since(slowStart))
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
 func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]aggRow[uint32], int, error) {
+	if limit+offset > maxFetchK {
+		return nil, 0, errFetchTooDeep
+	}
 	files, err := t.listSealedFiles(tblIP, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s: %w", tblIP, err)
@@ -900,7 +1237,7 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTo
 
 	fetchK := limit + offset + distributedTopKMargin
 
-	scratch, err := sql.Open("duckdb", "")
+	scratch, err := openScratchDuckDB()
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
@@ -951,6 +1288,9 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTo
 }
 
 func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]aggRow[tsPortKey], int, error) {
+	if limit+offset > maxFetchK {
+		return nil, 0, errFetchTooDeep
+	}
 	files, err := t.listSealedFiles(tblPort, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s: %w", tblPort, err)
@@ -1009,7 +1349,7 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 
 	fetchK := limit + offset + distributedTopKMargin
 
-	scratch, err := sql.Open("duckdb", "")
+	scratch, err := openScratchDuckDB()
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
@@ -1064,6 +1404,9 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 // doesn't hit the packed-integer LIKE limitation), so this stays on the
 // SQL-pushdown fast path regardless of whether filter is set.
 func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit, offset int, wantTotal bool) ([]aggRow[string], int, error) {
+	if limit+offset > maxFetchK {
+		return nil, 0, errFetchTooDeep
+	}
 	files, err := t.listSealedFiles(tblFlow, cutoff, until)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list sealed files for %s (domains): %w", tblFlow, err)
@@ -1142,7 +1485,7 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 
 	fetchK := limit + offset + distributedTopKMargin
 
-	scratch, err := sql.Open("duckdb", "")
+	scratch, err := openScratchDuckDB()
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
@@ -1279,7 +1622,7 @@ func (t *tsStore) queryTopologyEdges(cutoff, until int64) ([]aggRow[edgePairKey]
 
 	fetchK := topologyMaxEdges + distributedTopKMargin
 
-	scratch, err := sql.Open("duckdb", "")
+	scratch, err := openScratchDuckDB()
 	if err != nil {
 		return nil, fmt.Errorf("open scratch duckdb: %w", err)
 	}
@@ -1372,7 +1715,7 @@ func (t *tsStore) queryTopologyNodeTotals(cutoff, until int64, ips []uint32) (ma
 	}
 
 	if len(files) > 0 {
-		scratch, err := sql.Open("duckdb", "")
+		scratch, err := openScratchDuckDB()
 		if err != nil {
 			return nil, fmt.Errorf("open scratch duckdb: %w", err)
 		}

@@ -89,6 +89,11 @@ body {
 .bot { flex: none; height: 330px; }
 .bot-grid { display: grid; grid-template-columns: 1fr 260px 340px; gap: 10px; }
 
+.panel-loading-overlay {
+  position: absolute; inset: 0; z-index: 5; border-radius: inherit;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 12, 18, 0.4);
+}
 .panel {
   background: linear-gradient(180deg, var(--panel-raised), var(--panel));
   border: 1px solid var(--line); border-radius: 6px;

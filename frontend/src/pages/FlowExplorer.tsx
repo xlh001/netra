@@ -60,8 +60,8 @@ function FlowsTab({ range }: { range: TimeRange }) {
   const t = useT()
   const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState(PAGE_SIZE_CEILING, CHARTS_ROW_CHROME_PX)
   const [ipFilter, setIpFilter] = useState('')
-  const { data, loading } = usePolling(() => getFlowsPaged(range, page, pageSize, ipFilter || undefined), 0, [range, page, pageSize, ipFilter])
-  const { data: timeseries } = usePolling(() => getTimeseriesRange(range), 0, [range])
+  const { data, loading, error } = usePolling(() => getFlowsPaged(range, page, pageSize, ipFilter || undefined), 0, [range, page, pageSize, ipFilter])
+  const { data: timeseries, loading: timeseriesLoading } = usePolling(() => getTimeseriesRange(range), 0, [range])
   const windowSeconds = rangeToSeconds(range)
 
   const columns: ColumnsType<FlowStat> = [
@@ -96,10 +96,10 @@ function FlowsTab({ range }: { range: TimeRange }) {
     <div ref={containerRef} className="explorer-tab-body">
       <div className="explorer-charts-row">
         <div style={{ flex: 1.6, display: 'flex' }}>
-          <TrendChart timeseries={timeseries ?? null} />
+          <TrendChart timeseries={timeseries ?? null} loading={timeseriesLoading} />
         </div>
         <div style={{ flex: 1, display: 'flex' }}>
-          <ProtocolPie timeseries={timeseries ?? null} />
+          <ProtocolPie timeseries={timeseries ?? null} loading={timeseriesLoading} />
         </div>
       </div>
       <Input.Search
@@ -116,8 +116,9 @@ function FlowsTab({ range }: { range: TimeRange }) {
         columns={columns}
         dataSource={data?.flows ?? []}
         loading={loading}
-        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t)}
+        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t, true)}
         size="small"
+        locale={error ? { emptyText: error.message } : undefined}
       />
     </div>
   )
@@ -152,7 +153,7 @@ function IPsTab({ range }: { range: TimeRange }) {
         columns={columns}
         dataSource={data?.ips ?? []}
         loading={loading}
-        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t)}
+        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t, true)}
         size="small"
       />
     </div>
@@ -190,7 +191,7 @@ function PortsTab({ range }: { range: TimeRange }) {
         columns={columns}
         dataSource={data?.ports ?? []}
         loading={loading}
-        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t)}
+        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t, true)}
         size="small"
       />
     </div>
@@ -226,7 +227,7 @@ function DomainsTab({ range }: { range: TimeRange }) {
         columns={columns}
         dataSource={data?.domains ?? []}
         loading={loading}
-        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t)}
+        pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t, true)}
         size="small"
       />
     </div>

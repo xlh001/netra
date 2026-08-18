@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { Spin } from 'antd'
 import { useT } from '../../i18n/context'
 import { useEchart } from '../../hooks/useEchart'
 import { formatBytes, protoColor } from '../../lib/format'
 import type { Timeseries } from '../../api/types'
 
-export function ProtocolPie({ timeseries }: { timeseries: Timeseries | null }) {
+export function ProtocolPie({ timeseries, loading }: { timeseries: Timeseries | null; loading?: boolean }) {
   const t = useT()
   const divRef = useRef<HTMLDivElement>(null)
   const chartRef = useEchart(divRef)
@@ -74,6 +75,11 @@ export function ProtocolPie({ timeseries }: { timeseries: Timeseries | null }) {
         </h2>
       </div>
       <div ref={divRef} style={{ flex: 1, minHeight: 0 }} />
+      {loading && (
+        <div className="panel-loading-overlay">
+          <Spin size="small" />
+        </div>
+      )}
     </div>
   )
 }

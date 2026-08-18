@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { Spin } from 'antd'
 import { useT } from '../../i18n/context'
 import { useEchart } from '../../hooks/useEchart'
 import { formatBytes, protoColor } from '../../lib/format'
@@ -15,7 +16,7 @@ function formatAxisTime(ts: number, spanMs: number): string {
   return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
-export function TrendChart({ timeseries }: { timeseries: Timeseries | null }) {
+export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | null; loading?: boolean }) {
   const t = useT()
   const divRef = useRef<HTMLDivElement>(null)
   const chartRef = useEchart(divRef)
@@ -77,6 +78,11 @@ export function TrendChart({ timeseries }: { timeseries: Timeseries | null }) {
         </h2>
       </div>
       <div ref={divRef} id="trend-chart" />
+      {loading && (
+        <div className="panel-loading-overlay">
+          <Spin size="small" />
+        </div>
+      )}
     </div>
   )
 }

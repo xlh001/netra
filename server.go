@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -190,7 +191,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}
 		flows, total, err := store.QueryFlowsPaged(from, to, page, pageSize, FlowFilter{IP: r.URL.Query().Get("ip")})
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeStoreQueryError(w, err)
 			return
 		}
 		annotateIPTagsFlows(ipTags, flows)
@@ -214,7 +215,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}
 		ips, total, err := store.QueryIPsPaged(from, to, page, pageSize, r.URL.Query().Get("q"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeStoreQueryError(w, err)
 			return
 		}
 		annotateIPTagsIPs(ipTags, ips)
@@ -238,7 +239,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}
 		ports, total, err := store.QueryPortsPaged(from, to, page, pageSize, r.URL.Query().Get("q"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeStoreQueryError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -277,7 +278,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}
 		domains, total, err := store.QueryDomainsPaged(from, to, page, pageSize, r.URL.Query().Get("q"))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeStoreQueryError(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -1102,6 +1103,20 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			log.Printf("web server stopped: %v", err)
 		}
 	}()
+}
+
+// writeStoreQueryError maps a store-layer query error to an HTTP response.
+// errFetchTooDeep means the request itself is the problem (an offset far
+// enough into the result set that satisfying it would require an
+// almost-unbounded sort) -- that's a 400, not a 500, since the server
+// isn't malfunctioning, it's refusing a request it correctly identified
+// as too expensive to run. Everything else stays a generic 500.
+func writeStoreQueryError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errFetchTooDeep) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 func parsePaging(r *http.Request) (page, pageSize int, err error) {
