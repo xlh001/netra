@@ -1252,13 +1252,6 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTo
 		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed ip_samples: %w", err)
 	}
-	sealedTotal := 0
-	if wantTotal {
-		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
-			scratch.Close()
-			return nil, 0, fmt.Errorf("count sealed ip_samples: %w", err)
-		}
-	}
 	scratch.Close()
 
 	t.mu.RLock()
@@ -1272,18 +1265,69 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTo
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot ip_samples: %w", err)
 	}
-	hotTotal := 0
+
+	total := 0
 	if wantTotal {
-		if err := t.hotDB.QueryRow(countSQL(tblIP), cutoff, until).Scan(&hotTotal); err != nil {
+		// A naive sealedTotal+hotTotal double-counts any ip that appears in
+		// both sources (near-certain for long-lived/well-known hosts) --
+		// see project notes on the resulting "phantom last pages" bug. Fix:
+		// pull hot's full distinct key set (bounded, low-cardinality
+		// dimension) and exclude it from the sealed count, so the two
+		// counts are disjoint and sum to the true total.
+		hotIPRows, err := t.hotDB.Query(`SELECT DISTINCT ip FROM ip_samples WHERE ts >= ? AND ts <= ?`, cutoff, until)
+		if err != nil {
 			t.mu.RUnlock()
-			return nil, 0, fmt.Errorf("count hot ip_samples: %w", err)
+			return nil, 0, fmt.Errorf("list hot distinct ips: %w", err)
 		}
+		var hotIPs []uint32
+		for hotIPRows.Next() {
+			var ip int64
+			if err := hotIPRows.Scan(&ip); err != nil {
+				hotIPRows.Close()
+				t.mu.RUnlock()
+				return nil, 0, err
+			}
+			hotIPs = append(hotIPs, uint32(ip))
+		}
+		rowsErr := hotIPRows.Err()
+		hotIPRows.Close()
+		if rowsErr != nil {
+			t.mu.RUnlock()
+			return nil, 0, rowsErr
+		}
+		t.mu.RUnlock()
+
+		scratch2, err := openScratchDuckDB()
+		if err != nil {
+			return nil, 0, fmt.Errorf("open scratch duckdb for count: %w", err)
+		}
+		sealedExclusive := countSQL(sealedSource)
+		if len(hotIPs) > 0 {
+			var excl strings.Builder
+			excl.WriteString(" AND ip NOT IN (")
+			for i, ip := range hotIPs {
+				if i > 0 {
+					excl.WriteString(", ")
+				}
+				excl.WriteString(strconv.FormatInt(int64(ip), 10))
+			}
+			excl.WriteByte(')')
+			sealedExclusive = fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE ts >= ? AND ts <= ?%s GROUP BY ip)`, sealedSource, excl.String())
+		}
+		var sealedOnlyTotal int
+		if err := scratch2.QueryRow(sealedExclusive, cutoff, until).Scan(&sealedOnlyTotal); err != nil {
+			scratch2.Close()
+			return nil, 0, fmt.Errorf("count sealed-only ip_samples: %w", err)
+		}
+		scratch2.Close()
+		total = sealedOnlyTotal + len(hotIPs)
+		log.Printf("tsstore: queryIPsLimited exact total: sealedOnly=%d hotDistinct=%d total=%d", sealedOnlyTotal, len(hotIPs), total)
+	} else {
+		t.mu.RUnlock()
 	}
-	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
-	total := sealedTotal + hotTotal
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
@@ -1364,13 +1408,6 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed port_samples: %w", err)
 	}
-	sealedTotal := 0
-	if wantTotal {
-		if err := scratch.QueryRow(countSQL(sealedSource), cutoff, until).Scan(&sealedTotal); err != nil {
-			scratch.Close()
-			return nil, 0, fmt.Errorf("count sealed port_samples: %w", err)
-		}
-	}
 	scratch.Close()
 
 	t.mu.RLock()
@@ -1384,18 +1421,66 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot port_samples: %w", err)
 	}
-	hotTotal := 0
+
+	total := 0
 	if wantTotal {
-		if err := t.hotDB.QueryRow(countSQL(tblPort), cutoff, until).Scan(&hotTotal); err != nil {
+		// See queryIPsLimited for why this can't be a naive sealedTotal+
+		// hotTotal sum: pull hot's full distinct (proto,port) set and
+		// exclude it from the sealed count so the two totals are disjoint.
+		hotPortRows, err := t.hotDB.Query(`SELECT DISTINCT proto, port FROM port_samples WHERE ts >= ? AND ts <= ?`, cutoff, until)
+		if err != nil {
 			t.mu.RUnlock()
-			return nil, 0, fmt.Errorf("count hot port_samples: %w", err)
+			return nil, 0, fmt.Errorf("list hot distinct ports: %w", err)
 		}
+		var hotKeys []tsPortKey
+		for hotPortRows.Next() {
+			var proto, port int64
+			if err := hotPortRows.Scan(&proto, &port); err != nil {
+				hotPortRows.Close()
+				t.mu.RUnlock()
+				return nil, 0, err
+			}
+			hotKeys = append(hotKeys, tsPortKey{Proto: uint8(proto), Port: uint16(port)})
+		}
+		rowsErr := hotPortRows.Err()
+		hotPortRows.Close()
+		if rowsErr != nil {
+			t.mu.RUnlock()
+			return nil, 0, rowsErr
+		}
+		t.mu.RUnlock()
+
+		scratch2, err := openScratchDuckDB()
+		if err != nil {
+			return nil, 0, fmt.Errorf("open scratch duckdb for count: %w", err)
+		}
+		sealedExclusive := countSQL(sealedSource)
+		if len(hotKeys) > 0 {
+			var excl strings.Builder
+			excl.WriteString(" AND (proto, port) NOT IN (")
+			for i, k := range hotKeys {
+				if i > 0 {
+					excl.WriteString(", ")
+				}
+				fmt.Fprintf(&excl, "(%d, %d)", k.Proto, k.Port)
+			}
+			excl.WriteByte(')')
+			sealedExclusive = fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE ts >= ? AND ts <= ?%s GROUP BY proto, port)`, sealedSource, excl.String())
+		}
+		var sealedOnlyTotal int
+		if err := scratch2.QueryRow(sealedExclusive, cutoff, until).Scan(&sealedOnlyTotal); err != nil {
+			scratch2.Close()
+			return nil, 0, fmt.Errorf("count sealed-only port_samples: %w", err)
+		}
+		scratch2.Close()
+		total = sealedOnlyTotal + len(hotKeys)
+		log.Printf("tsstore: queryPortsLimited exact total: sealedOnly=%d hotDistinct=%d total=%d", sealedOnlyTotal, len(hotKeys), total)
+	} else {
+		t.mu.RUnlock()
 	}
-	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
-	total := sealedTotal + hotTotal
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
@@ -1500,13 +1585,6 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 		scratch.Close()
 		return nil, 0, fmt.Errorf("scan sealed flow_samples (domains): %w", err)
 	}
-	sealedTotal := 0
-	if wantTotal {
-		if err := scratch.QueryRow(countSQL(sealedSource), countArgs(cutoff, until)...).Scan(&sealedTotal); err != nil {
-			scratch.Close()
-			return nil, 0, fmt.Errorf("count sealed flow_samples (domains): %w", err)
-		}
-	}
 	scratch.Close()
 
 	t.mu.RLock()
@@ -1520,18 +1598,68 @@ func (t *tsStore) queryDomainsLimited(cutoff, until int64, filter string, limit,
 		t.mu.RUnlock()
 		return nil, 0, fmt.Errorf("scan hot flow_samples (domains): %w", err)
 	}
-	hotTotal := 0
+
+	total := 0
 	if wantTotal {
-		if err := t.hotDB.QueryRow(countSQL(tblFlow), countArgs(cutoff, until)...).Scan(&hotTotal); err != nil {
+		// See queryIPsLimited for why this can't be a naive sealedTotal+
+		// hotTotal sum: pull hot's full distinct domain set and exclude it
+		// from the sealed count so the two totals are disjoint.
+		hotDomainRows, err := t.hotDB.Query(`SELECT DISTINCT domain FROM `+tblFlow+` WHERE `+where, countArgs(cutoff, until)...)
+		if err != nil {
 			t.mu.RUnlock()
-			return nil, 0, fmt.Errorf("count hot flow_samples (domains): %w", err)
+			return nil, 0, fmt.Errorf("list hot distinct domains: %w", err)
 		}
+		var hotDomains []string
+		for hotDomainRows.Next() {
+			var d string
+			if err := hotDomainRows.Scan(&d); err != nil {
+				hotDomainRows.Close()
+				t.mu.RUnlock()
+				return nil, 0, err
+			}
+			hotDomains = append(hotDomains, d)
+		}
+		rowsErr := hotDomainRows.Err()
+		hotDomainRows.Close()
+		if rowsErr != nil {
+			t.mu.RUnlock()
+			return nil, 0, rowsErr
+		}
+		t.mu.RUnlock()
+
+		scratch2, err := openScratchDuckDB()
+		if err != nil {
+			return nil, 0, fmt.Errorf("open scratch duckdb for count: %w", err)
+		}
+		sealedExclusive := countSQL(sealedSource)
+		if len(hotDomains) > 0 {
+			var excl strings.Builder
+			excl.WriteString(" AND domain NOT IN (")
+			for i, d := range hotDomains {
+				if i > 0 {
+					excl.WriteString(", ")
+				}
+				excl.WriteByte('\'')
+				excl.WriteString(strings.ReplaceAll(d, "'", "''"))
+				excl.WriteByte('\'')
+			}
+			excl.WriteByte(')')
+			sealedExclusive = fmt.Sprintf(`SELECT COUNT(*) FROM (SELECT 1 FROM %s WHERE %s%s GROUP BY domain)`, sealedSource, where, excl.String())
+		}
+		var sealedOnlyTotal int
+		if err := scratch2.QueryRow(sealedExclusive, countArgs(cutoff, until)...).Scan(&sealedOnlyTotal); err != nil {
+			scratch2.Close()
+			return nil, 0, fmt.Errorf("count sealed-only flow_samples (domains): %w", err)
+		}
+		scratch2.Close()
+		total = sealedOnlyTotal + len(hotDomains)
+		log.Printf("tsstore: queryDomainsLimited exact total: sealedOnly=%d hotDistinct=%d total=%d", sealedOnlyTotal, len(hotDomains), total)
+	} else {
+		t.mu.RUnlock()
 	}
-	t.mu.RUnlock()
 
 	merged := mergeSimpleAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
-	total := sealedTotal + hotTotal
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
