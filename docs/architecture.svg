@@ -1,0 +1,125 @@
+<svg width="1160" height="1010" viewBox="0 0 1160 1010" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0C8599"/>
+    </marker>
+    <marker id="arrowDim" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8A97A3"/>
+    </marker>
+  </defs>
+
+  <style>
+    .band-label { font: 700 13px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #0C8599; letter-spacing: 1.5px; }
+    .comp-title { font: 600 15px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #141A21; }
+    .comp-sub { font: 400 12.5px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #5C6B78; }
+    .mono { font: 500 11.5px "SF Mono", Menlo, Consolas, monospace; fill: #0C8599; }
+    .mono-dim { font: 400 11px "SF Mono", Menlo, Consolas, monospace; fill: #7C8996; }
+    .flow-label { font: 500 11.5px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #8A97A3; }
+    .comp-box { fill: #ffffff; stroke: #D7DFE4; stroke-width: 1.2; }
+    .comp-box-accent { fill: #E4F4F7; stroke: #0C8599; stroke-width: 1.2; }
+  </style>
+
+  <rect x="0" y="0" width="1160" height="1010" fill="#F6F8FA"/>
+
+  <!-- ============ BAND 1: 网络镜像 ============ -->
+  <rect x="40" y="34" width="1080" height="86" rx="10" fill="#FFFFFF" stroke="#D7DFE4" stroke-width="1.2"/>
+  <text x="64" y="60" class="band-label">网络层 · 旁路镜像</text>
+  <rect x="64" y="72" width="230" height="36" rx="8" class="comp-box"/>
+  <text x="179" y="95" text-anchor="middle" class="comp-title">交换机 SPAN / 镜像口</text>
+  <line x1="294" y1="90" x2="360" y2="90" stroke="#8A97A3" stroke-width="1.5" marker-end="url(#arrowDim)"/>
+  <rect x="366" y="72" width="180" height="36" rx="8" class="comp-box"/>
+  <text x="456" y="95" text-anchor="middle" class="comp-title">物理网卡</text>
+  <text x="820" y="95" text-anchor="middle" class="comp-sub">只读镜像流量，不侵入业务链路，不产生额外流量</text>
+
+  <!-- flow arrow 1 -->
+  <line x1="580" y1="120" x2="580" y2="156" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ============ BAND 2: 内核态 XDP/eBPF ============ -->
+  <rect x="40" y="160" width="1080" height="164" rx="10" fill="#ECEEF1" stroke="#D7DFE4" stroke-width="1.2"/>
+  <text x="64" y="186" class="band-label">内核态 · XDP / eBPF</text>
+
+  <rect x="64" y="200" width="336" height="108" rx="8" class="comp-box-accent"/>
+  <text x="82" y="226" class="comp-title">XDP 程序</text>
+  <text x="82" y="248" class="comp-sub">挂载于网卡驱动收包路径</text>
+  <text x="82" y="266" class="comp-sub">原生模式运行在 sk_buff 分配之前</text>
+  <text x="82" y="290" class="mono">零拷贝 · CPU 开销不随 pps 线性增长</text>
+
+  <rect x="420" y="200" width="336" height="108" rx="8" class="comp-box"/>
+  <text x="438" y="226" class="comp-title">内核态聚合</text>
+  <text x="438" y="248" class="comp-sub">五元组 / IP / 端口 计数聚合</text>
+  <text x="438" y="266" class="comp-sub">TLS SNI 被动解析（域名识别）</text>
+  <text x="438" y="290" class="mono-dim">eBPF map，用户态只读已聚合结果</text>
+
+  <rect x="776" y="200" width="304" height="108" rx="8" class="comp-box"/>
+  <text x="794" y="226" class="comp-title">启发式检测</text>
+  <text x="794" y="248" class="comp-sub">扫描 / DDoS / 单 IP 大流量</text>
+  <text x="794" y="266" class="comp-sub">阈值持续更新，无需落盘即可判断</text>
+
+  <line x1="580" y1="324" x2="580" y2="356" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ============ BAND 3: 用户态采集 ============ -->
+  <rect x="40" y="360" width="1080" height="120" rx="10" fill="#FFFFFF" stroke="#D7DFE4" stroke-width="1.2"/>
+  <text x="64" y="386" class="band-label">用户态 · Go 采集/聚合</text>
+  <rect x="64" y="400" width="420" height="60" rx="8" class="comp-box"/>
+  <text x="82" y="424" class="comp-title">Aggregator</text>
+  <text x="82" y="444" class="mono">默认 5s / tick · 读取 eBPF map 滚动统计桶</text>
+  <text x="820" y="434" text-anchor="middle" class="comp-sub">当前活跃状态实时更新（内存态，非历史存储）</text>
+
+  <!-- main flow arrow to storage -->
+  <line x1="580" y1="480" x2="580" y2="516" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow)"/>
+  <!-- side branch: realtime alert bypasses storage entirely, routed outside the
+       band rects (x>1120) so it visibly passes AROUND the storage layer rather
+       than appearing to terminate inside it -->
+  <path d="M 484 430 L 1140 430 L 1140 860 L 1088 860" fill="none" stroke="#8A97A3" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#arrowDim)"/>
+  <text x="900" y="416" text-anchor="middle" class="flow-label">检测命中 → 直接推送告警，不经过存储</text>
+
+  <!-- ============ BAND 4: 存储层 ============ -->
+  <rect x="40" y="520" width="1080" height="200" rx="10" fill="#FFFFFF" stroke="#D7DFE4" stroke-width="1.2"/>
+  <text x="64" y="546" class="band-label">存储层</text>
+
+  <rect x="64" y="560" width="330" height="140" rx="8" class="comp-box"/>
+  <text x="82" y="586" class="comp-title">SQLite</text>
+  <text x="82" y="608" class="comp-sub">配置 / 用户 / 告警记录</text>
+  <text x="82" y="626" class="comp-sub">MCP 配置 / AI 对话历史</text>
+  <text x="82" y="648" class="mono-dim">低频、强一致读写</text>
+
+  <rect x="410" y="560" width="670" height="140" rx="8" class="comp-box-accent"/>
+  <text x="428" y="586" class="comp-title">DuckDB</text>
+  <text x="428" y="608" class="comp-sub">高频流量历史：五元组 / IP / 端口 / 域名</text>
+  <rect x="428" y="622" width="180" height="60" rx="6" fill="#FFFFFF" stroke="#0C8599" stroke-width="1"/>
+  <text x="518" y="644" text-anchor="middle" class="mono">热缓冲区</text>
+  <text x="518" y="660" text-anchor="middle" class="mono-dim">当前周期</text>
+  <line x1="608" y1="652" x2="638" y2="652" stroke="#0C8599" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="644" y="622" width="180" height="60" rx="6" fill="#FFFFFF" stroke="#0C8599" stroke-width="1"/>
+  <text x="734" y="644" text-anchor="middle" class="mono">Parquet 文件</text>
+  <text x="734" y="660" text-anchor="middle" class="mono-dim">按小时封存</text>
+  <line x1="824" y1="652" x2="854" y2="652" stroke="#0C8599" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="860" y="622" width="200" height="60" rx="6" fill="#FFFFFF" stroke="#0C8599" stroke-width="1"/>
+  <text x="960" y="640" text-anchor="middle" class="mono">按文件缓存 Top-K</text>
+  <text x="960" y="658" text-anchor="middle" class="mono-dim">启动并发预热</text>
+  <text x="428" y="690" class="mono-dim">memory_limit = 可用内存 × 80%（兜底，不因单次查询拖垮进程）</text>
+
+  <line x1="580" y1="720" x2="580" y2="756" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ============ BAND 5: 应用与集成 ============ -->
+  <rect x="40" y="760" width="1080" height="210" rx="10" fill="#FFFFFF" stroke="#D7DFE4" stroke-width="1.2"/>
+  <text x="64" y="786" class="band-label">应用与集成</text>
+
+  <rect x="64" y="800" width="330" height="146" rx="8" class="comp-box"/>
+  <text x="82" y="826" class="comp-title">Web 控制台</text>
+  <text x="82" y="848" class="comp-sub">实时大屏 · 流量详情</text>
+  <text x="82" y="866" class="comp-sub">威胁感知 · 系统配置</text>
+
+  <rect x="410" y="800" width="330" height="146" rx="8" class="comp-box-accent"/>
+  <text x="428" y="826" class="comp-title">AI 助手</text>
+  <text x="428" y="848" class="comp-sub">任意 OpenAI 协议兼容模型</text>
+  <text x="428" y="866" class="comp-sub">MCP 扩展：HTTP / stdio</text>
+  <text x="428" y="888" class="mono-dim">基于真实历史数据回答问题</text>
+
+  <rect x="756" y="800" width="324" height="146" rx="8" class="comp-box"/>
+  <text x="774" y="826" class="comp-title">告警与导出</text>
+  <text x="774" y="848" class="comp-sub">企业微信 / 钉钉 / 飞书</text>
+  <text x="774" y="866" class="comp-sub">Kafka 异步导出（可选）</text>
+
+  <text x="1080" y="998" text-anchor="end" class="mono-dim">单文件二进制 · 全部组件同进程内运行</text>
+</svg>
