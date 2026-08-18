@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    ignore:
+      # DuckDB version is manually paired with docker/buster-builder.Dockerfile's
+      # DUCKDB_VERSION arg -- an automated bump would desync the two and break
+      # the CI toolchain build. Bump both together by hand instead.
+      - dependency-name: github.com/marcboeker/go-duckdb
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: daily
