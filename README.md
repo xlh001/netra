@@ -19,11 +19,11 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 
 Netra 自己不产生流量，也不挂在业务转发路径上——它接的是交换机 SPAN 镜像口复制出来的一份只读副本：
 
-<img src="docs/mirror-topology.svg" alt="Netra 流量镜像拓扑图" width="100%" />
+<img src="docs/mirror-topology.png" alt="Netra 流量镜像拓扑图" width="100%" />
 
 这份副本进入 Netra 之后的处理链路（内核态 XDP/eBPF → 用户态采集 → 存储 → 应用层）如下：
 
-<img src="docs/architecture.svg" alt="Netra 架构图" width="100%" />
+<img src="docs/architecture.png" alt="Netra 架构图" width="100%" />
 
 ## 流量采集性能
 
