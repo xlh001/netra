@@ -65,7 +65,7 @@
 
   <!-- main flow arrow to storage -->
   <line x1="580" y1="480" x2="580" y2="516" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow)"/>
-  <!-- side branch: alert push doesn't wait on the storage write -- alerts are
+  <!-- side branch: alert push doesn't wait on the storage write; alerts are
        still persisted via the normal snap path below (PersistScanAlerts,
        default on), this is only about notification latency, not an
        alternate/exclusive data path. Routed outside the band rects (x>1120)
