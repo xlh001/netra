@@ -4,15 +4,20 @@ name: Build
 # inside a glibc-2.28-matched toolchain) entirely on GitHub's runners.
 # Point: a contributor never needs the local C toolchain / Docker /
 # DuckDB-from-source build described in README's "编译" section just to
-# get a working binary to test against -- push or open a PR, then
-# download the artifact from this run.
+# get a working binary to test against -- push a branch (own fork or this
+# repo) or open a PR, then download the artifact from that run. First push
+# to a fresh fork may need a one-time click through the "Workflows aren't
+# being run on this forked repository" prompt on the fork's Actions tab.
 #
-# On every push/PR: build, vet, test, upload the binary as a workflow
-# artifact (for PRs, this is what a reviewer downloads to test before
-# merging -- not a public release).
+# On every push (any branch) or PR: build, vet, test, upload the binary as
+# a workflow artifact -- lets you validate a change before it's PR-ready.
 # On push to main specifically (i.e. once a PR lands): additionally cuts
 # a new tagged GitHub Release with netra.zip attached, so main always has
 # a corresponding downloadable, versioned build -- no manual tagging step.
+#
+# paths-ignore on both triggers skips changes that can't affect the built
+# binary (docs, license, dependabot config) -- otherwise every doc-only
+# push to main would still cut a new, content-identical release.
 #
 # This does NOT verify the binary actually captures traffic correctly --
 # GitHub's runners have no real NIC and no CAP_BPF, so XDP attach can't be
@@ -21,8 +26,19 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/dependabot.yml'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/dependabot.yml'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
