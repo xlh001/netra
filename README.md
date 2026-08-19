@@ -136,15 +136,20 @@ CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o netra .
 如果你想新增功能或发现 bug，不需要在本地搭这套编译环境，可以按照以下步骤：
 
 1. Fork 本仓库，首次进 fork 的 Actions 标签页可能会看到 "Workflows aren't being run on this forked repository" 提示，点一下确认即可。
-2. 切换分支：`git checkout -b fixbug`
-3. 修改代码
-4. 提交并 push 到分支：
+2. Clone 自己的 fork 到本地：
+   ```ini
+   git clone git@github.com:<你的用户名>/netra.git
+   cd netra
+   ```
+3. 切换分支：`git checkout -b fixbug`
+4. 修改代码
+5. 提交并 push 到分支：
    ```ini
    git add .
    git commit -m 'fix: xxx'
    git push origin fixbug
    ```
-   这一步会自动触发 CI进行编译
-5. 编译完成后，在对应的 Build 记录里的 Artifacts 下载 `netra-linux-amd64`，部署测试验证，确认没问题再发起 Pull Request。
+   这一步会自动触发 CI 进行编译
+6. 编译完成后，在对应的 Build 记录里的 Artifacts 下载 `netra-linux-amd64`，部署测试验证，确认没问题再发起 Pull Request。
 
 <sub>如果这个项目对你有帮助，可以[请作者喝杯咖啡](docs/sponsor.jpg) ☕。</sub>
