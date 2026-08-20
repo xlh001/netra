@@ -82,6 +82,21 @@ func main() {
 		log.Fatalf("lookup interface %q: %v", *ifaceName, err)
 	}
 
+	alreadyPromisc, err := setPromiscuous(iface.Name)
+	if err != nil {
+		log.Fatalf("enable promiscuous mode on %s: %v", iface.Name, err)
+	}
+	if alreadyPromisc {
+		log.Printf("%s is already in promiscuous mode, leaving it as-is", iface.Name)
+	} else {
+		log.Printf("enabled promiscuous mode on %s (needed to see mirrored traffic not addressed to this host's own MAC)", iface.Name)
+		defer func() {
+			if err := clearPromiscuous(iface.Name); err != nil {
+				log.Printf("disable promiscuous mode on %s: %v", iface.Name, err)
+			}
+		}()
+	}
+
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("remove memlock rlimit: %v", err)
 	}
