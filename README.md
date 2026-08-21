@@ -1,12 +1,12 @@
 <h2 align="center">Netra</h2>
 
 <p align="center">
+  <a href="https://github.com/xxddpac/netra/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/xxddpac/netra/build.yml?branch=main" alt="Build" /></a>
   <img src="https://img.shields.io/github/license/xxddpac/netra" alt="License" />
   <img src="https://img.shields.io/github/go-mod/go-version/xxddpac/netra" alt="Go Version" />
   <img src="https://img.shields.io/github/v/tag/xxddpac/netra" alt="Version" />
   <img src="https://img.shields.io/github/last-commit/xxddpac/netra" alt="Last Commit" />
   <img src="https://img.shields.io/badge/platform-linux-blue" alt="Platform" />
-  <img src="https://img.shields.io/github/stars/xxddpac/netra?style=social" alt="Stars" />
 </p>
 
 <p align="center">One binary. Observe your network with eBPF. Ask AI. Extend with MCP</p>
