@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cilium/ebpf/link"
@@ -62,8 +63,8 @@ func (r *retentionDuration) Set(s string) error {
 }
 
 func main() {
-	ifaceName := flag.String("iface", "", "network interface to attach the XDP program to (required)")
-	generic := flag.Bool("generic", false, "force generic/SKB XDP mode (needed on NICs without native XDP driver support, e.g. WSL2's virtual NIC, or when the target NIC has no spare hardware queues left for native XDP)")
+	ifaceNames := flag.String("iface", "", "network interface(s) to attach the XDP program to; comma-separated for multiple, e.g. eno1,eno2 (required) -- the same loaded program attaches to each, sharing one set of maps, so multi-interface traffic aggregates into a single view")
+	generic := flag.Bool("generic", false, "force generic/SKB XDP mode (needed on NICs without native XDP driver support, e.g. WSL2's virtual NIC, or when the target NIC has no spare hardware queues left for native XDP); applies to every interface in -iface")
 	interval := flag.Duration("interval", 5*time.Second, "collector tick: how often to read the map and roll a new dashboard bucket")
 	webAddr := flag.String("web-addr", ":10211", "address to serve the web dashboard on, e.g. :8080 (set to empty string to disable the web dashboard and run collection-only)")
 	geoipDB := flag.String("geoip-db", "GeoLite2-City.mmdb", "path to a MaxMind GeoLite2-City.mmdb file, enables the world map panel (optional; kept external so updating GeoIP data doesn't require rebuilding netra). Defaults to that filename in the working directory -- silently disabled if not found there, override the path if you keep it elsewhere")
@@ -73,28 +74,41 @@ func main() {
 	flag.Var(dbRetention, "db-retention", "how long persisted history is kept before being pruned, as <N>d (days) or <N>m (months, = 30 days each), e.g. 30d or 1m")
 	dbHotPeriod := flag.Duration("db-hot-period", 1*time.Hour, "how often flow/ip/port traffic history is sealed from the DuckDB hot buffer into a Parquet file; also the effective minimum retention granularity")
 	flag.Parse()
-	if *ifaceName == "" {
-		log.Fatal("usage: netra -iface <ifname> [-web-addr <addr>]")
+	if *ifaceNames == "" {
+		log.Fatal("usage: netra -iface <ifname>[,<ifname>...] [-web-addr <addr>]")
 	}
 
-	iface, err := net.InterfaceByName(*ifaceName)
-	if err != nil {
-		log.Fatalf("lookup interface %q: %v", *ifaceName, err)
+	var ifaces []net.Interface
+	for _, name := range strings.Split(*ifaceNames, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		iface, err := net.InterfaceByName(name)
+		if err != nil {
+			log.Fatalf("lookup interface %q: %v", name, err)
+		}
+		ifaces = append(ifaces, *iface)
+	}
+	if len(ifaces) == 0 {
+		log.Fatal("usage: netra -iface <ifname>[,<ifname>...] [-web-addr <addr>]")
 	}
 
-	alreadyPromisc, err := setPromiscuous(iface.Name)
-	if err != nil {
-		log.Fatalf("enable promiscuous mode on %s: %v", iface.Name, err)
-	}
-	if alreadyPromisc {
-		log.Printf("%s is already in promiscuous mode, leaving it as-is", iface.Name)
-	} else {
-		log.Printf("enabled promiscuous mode on %s (needed to see mirrored traffic not addressed to this host's own MAC)", iface.Name)
-		defer func() {
-			if err := clearPromiscuous(iface.Name); err != nil {
-				log.Printf("disable promiscuous mode on %s: %v", iface.Name, err)
-			}
-		}()
+	for _, iface := range ifaces {
+		alreadyPromisc, err := setPromiscuous(iface.Name)
+		if err != nil {
+			log.Fatalf("enable promiscuous mode on %s: %v", iface.Name, err)
+		}
+		if alreadyPromisc {
+			log.Printf("%s is already in promiscuous mode, leaving it as-is", iface.Name)
+		} else {
+			log.Printf("enabled promiscuous mode on %s (needed to see mirrored traffic not addressed to this host's own MAC)", iface.Name)
+			defer func() {
+				if err := clearPromiscuous(iface.Name); err != nil {
+					log.Printf("disable promiscuous mode on %s: %v", iface.Name, err)
+				}
+			}()
+		}
 	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -107,21 +121,22 @@ func main() {
 	}
 	defer objs.Close()
 
-	opts := link.XDPOptions{
-		Program:   objs.XdpFlowCount,
-		Interface: iface.Index,
+	for _, iface := range ifaces {
+		opts := link.XDPOptions{
+			Program:   objs.XdpFlowCount,
+			Interface: iface.Index,
+		}
+		if *generic {
+			opts.Flags = link.XDPGenericMode
+		}
+		xdpLink, err := link.AttachXDP(opts)
+		if err != nil {
+			log.Fatalf("attach XDP to %s: %v", iface.Name, err)
+		}
+		defer xdpLink.Close()
+		log.Printf("XDP program attached to %s (ifindex %d)", iface.Name, iface.Index)
 	}
-	if *generic {
-		opts.Flags = link.XDPGenericMode
-	}
-
-	xdpLink, err := link.AttachXDP(opts)
-	if err != nil {
-		log.Fatalf("attach XDP to %s: %v", iface.Name, err)
-	}
-	defer xdpLink.Close()
-
-	log.Printf("XDP program attached to %s (ifindex %d); Ctrl-C to detach and exit", iface.Name, iface.Index)
+	log.Println("Ctrl-C to detach and exit")
 
 	agg := newAggregator(*interval)
 

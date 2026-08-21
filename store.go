@@ -129,6 +129,7 @@ func createSchema(db *sql.DB) error {
 			persist_scan_alerts INTEGER NOT NULL,
 			db_flow_topk INTEGER NOT NULL DEFAULT 2000,
 			topk_per_bucket INTEGER NOT NULL DEFAULT 200,
+			anomaly_enabled INTEGER NOT NULL DEFAULT 0,
 			anomaly_window_sec INTEGER NOT NULL DEFAULT 60,
 			anomaly_peer_threshold INTEGER NOT NULL DEFAULT 500,
 			anomaly_avg_packets_threshold REAL NOT NULL DEFAULT 10.0,
@@ -278,6 +279,7 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 	for _, col := range []struct{ name, ddl string }{
 		{"db_flow_topk", "ALTER TABLE app_config ADD COLUMN db_flow_topk INTEGER NOT NULL DEFAULT 2000"},
 		{"topk_per_bucket", "ALTER TABLE app_config ADD COLUMN topk_per_bucket INTEGER NOT NULL DEFAULT 200"},
+		{"anomaly_enabled", "ALTER TABLE app_config ADD COLUMN anomaly_enabled INTEGER NOT NULL DEFAULT 0"},
 		{"anomaly_window_sec", "ALTER TABLE app_config ADD COLUMN anomaly_window_sec INTEGER NOT NULL DEFAULT 60"},
 		{"anomaly_peer_threshold", "ALTER TABLE app_config ADD COLUMN anomaly_peer_threshold INTEGER NOT NULL DEFAULT 500"},
 		{"anomaly_avg_packets_threshold", "ALTER TABLE app_config ADD COLUMN anomaly_avg_packets_threshold REAL NOT NULL DEFAULT 10.0"},
@@ -472,13 +474,13 @@ func ensureThreatAlertsSchema(db *sql.DB) error {
 }
 
 func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
-	var persistScanAlerts, aiEnabled int
+	var persistScanAlerts, anomalyEnabled, aiEnabled int
 	row := s.db.QueryRow(`SELECT refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
-		anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
+		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model
 		FROM app_config WHERE id = 1`)
 	if err := row.Scan(&dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
-		&dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
+		&anomalyEnabled, &dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
 		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel); err != nil {
 		if err == sql.ErrNoRows {
 			return ConfigDTO{}, false, nil
@@ -486,6 +488,7 @@ func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
 		return ConfigDTO{}, false, err
 	}
 	dto.PersistScanAlerts = persistScanAlerts != 0
+	dto.AnomalyEnabled = anomalyEnabled != 0
 	dto.AIEnabled = aiEnabled != 0
 	return dto, true, nil
 }
@@ -495,17 +498,21 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	if dto.PersistScanAlerts {
 		persistScanAlerts = 1
 	}
+	anomalyEnabled := 0
+	if dto.AnomalyEnabled {
+		anomalyEnabled = 1
+	}
 	aiEnabled := 0
 	if dto.AIEnabled {
 		aiEnabled = 1
 	}
 	res, err := s.db.Exec(`UPDATE app_config SET
 		refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
-		anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
+		anomaly_enabled = ?, anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
 		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?
 		WHERE id = 1`,
 		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
-		dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
+		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel)
 	if err != nil {
 		return fmt.Errorf("update app_config: %w", err)
@@ -516,11 +523,11 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 
 	_, err = s.db.Exec(`INSERT INTO app_config(
 		id, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
-		anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
+		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
-		dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
+		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel)
 	if err != nil {
 		return fmt.Errorf("insert app_config: %w", err)

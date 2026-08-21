@@ -1,13 +1,13 @@
 import { useEffect } from 'react'
 import { useT } from '../../i18n/context'
 import { useAnimatedNumber } from '../../hooks/useAnimatedNumber'
-import { formatBps, formatBytes, windowToSeconds } from '../../lib/format'
+import { formatBps, formatBytes, formatCount, windowToSeconds } from '../../lib/format'
 import type { Report } from '../../api/types'
 
 export function Overview({ report }: { report: Report | null }) {
   const t = useT()
-  const activeFlows = useAnimatedNumber(report?.activeFlowsNow ?? 0, (v) => Math.round(v).toLocaleString())
-  const packets = useAnimatedNumber(report?.totalPackets ?? 0, (v) => Math.round(v).toLocaleString())
+  const activeFlows = useAnimatedNumber(report?.activeFlowsNow ?? 0, formatCount)
+  const packets = useAnimatedNumber(report?.totalPackets ?? 0, formatCount)
   const bytes = useAnimatedNumber(report?.totalBytes ?? 0, formatBytes)
 
   const windowSeconds = windowToSeconds(report?.window ?? '15m')

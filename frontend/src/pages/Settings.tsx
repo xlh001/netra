@@ -85,7 +85,7 @@ export function Settings() {
               onChange={setActiveTab}
               items={[
                 { key: 'general', label: t('settingsSectionGeneral'), forceRender: true, children: <GeneralTab t={t} /> },
-                { key: 'threat', label: t('settingsSectionThreat'), forceRender: true, children: <ThreatTab t={t} /> },
+                { key: 'threat', label: t('settingsSectionThreat'), forceRender: true, children: <ThreatTab t={t} form={form} /> },
                 { key: 'capacity', label: t('settingsSectionCapacity'), forceRender: true, children: <CapacityTab t={t} /> },
                 { key: 'ai', label: t('aiPageTitle'), forceRender: true, children: <AITab t={t} form={form} config={config} /> },
                 { key: 'kafka', label: t('settingsSectionKafka'), forceRender: true, children: <KafkaTab t={t} form={form} /> },
@@ -121,7 +121,7 @@ function GeneralTab({ t }: { t: T }) {
 
 const BYTES_PER_GB = 1024 * 1024 * 1024
 
-function VolumeThresholdInput({ value, onChange }: { value?: number; onChange?: (bytes: number) => void }) {
+function VolumeThresholdInput({ value, onChange, disabled }: { value?: number; onChange?: (bytes: number) => void; disabled?: boolean }) {
   const displayValue = value != null ? Math.round((value / BYTES_PER_GB) * 100) / 100 : undefined
 
   return (
@@ -131,6 +131,7 @@ function VolumeThresholdInput({ value, onChange }: { value?: number; onChange?: 
       style={{ width: '100%' }}
       addonAfter="GB"
       value={displayValue}
+      disabled={disabled}
       onChange={(n) => {
         if (n == null) return
         onChange?.(Math.round(n * BYTES_PER_GB))
@@ -139,9 +140,14 @@ function VolumeThresholdInput({ value, onChange }: { value?: number; onChange?: 
   )
 }
 
-function ThreatTab({ t }: { t: T }) {
+function ThreatTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
+  const anomalyEnabled = Form.useWatch('anomalyEnabled', form)
+
   return (
     <>
+      <Form.Item label={t('settingsAnomalyEnabled')} name="anomalyEnabled" valuePropName="checked" extra={t('settingsAnomalyEnabledHint')}>
+        <Switch />
+      </Form.Item>
       <Form.Item label={t('settingsPersistAlerts')} name="persistScanAlerts" valuePropName="checked">
         <Switch />
       </Form.Item>
@@ -153,14 +159,14 @@ function ThreatTab({ t }: { t: T }) {
         </span>
       </Divider>
       <p className="settings-section-desc">{t('settingsSectionThreatPeerDesc')}</p>
-      <Form.Item label={t('settingsAnomalyWindow')} name="anomalyWindowSec" rules={[{ required: true }]}>
-        <InputNumber min={1} style={{ width: '100%' }} />
+      <Form.Item label={t('settingsAnomalyWindow')} name="anomalyWindowSec" rules={anomalyEnabled ? [{ required: true }] : []}>
+        <InputNumber min={1} style={{ width: '100%' }} disabled={!anomalyEnabled} />
       </Form.Item>
-      <Form.Item label={t('settingsAnomalyPeerThreshold')} name="anomalyPeerThreshold" rules={[{ required: true }]}>
-        <InputNumber min={1} style={{ width: '100%' }} />
+      <Form.Item label={t('settingsAnomalyPeerThreshold')} name="anomalyPeerThreshold" rules={anomalyEnabled ? [{ required: true }] : []}>
+        <InputNumber min={1} style={{ width: '100%' }} disabled={!anomalyEnabled} />
       </Form.Item>
-      <Form.Item label={t('settingsAnomalyAvgPackets')} name="anomalyAvgPacketsThreshold" rules={[{ required: true }]}>
-        <InputNumber min={0.1} step={0.1} style={{ width: '100%' }} />
+      <Form.Item label={t('settingsAnomalyAvgPackets')} name="anomalyAvgPacketsThreshold" rules={anomalyEnabled ? [{ required: true }] : []}>
+        <InputNumber min={0.1} step={0.1} style={{ width: '100%' }} disabled={!anomalyEnabled} />
       </Form.Item>
 
       <Divider titlePlacement="left">
@@ -170,8 +176,8 @@ function ThreatTab({ t }: { t: T }) {
         </span>
       </Divider>
       <p className="settings-section-desc">{t('settingsSectionThreatVolumeDesc')}</p>
-      <Form.Item label={t('settingsVolumeThreshold')} name="volumeThresholdBytes" rules={[{ required: true }]}>
-        <VolumeThresholdInput />
+      <Form.Item label={t('settingsVolumeThreshold')} name="volumeThresholdBytes" rules={anomalyEnabled ? [{ required: true }] : []}>
+        <VolumeThresholdInput disabled={!anomalyEnabled} />
       </Form.Item>
     </>
   )

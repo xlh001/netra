@@ -11,6 +11,18 @@ export function formatBytes(n: number): string {
   return v.toFixed(2) + units[i]
 }
 
+export function formatCount(n: number): string {
+  const units = ['', 'K', 'M', 'B', 'T']
+  if (n < 1000) return Math.round(n).toLocaleString()
+  let i = 0
+  let v = n
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000
+    i++
+  }
+  return v.toFixed(2) + units[i]
+}
+
 export function formatBps(bps: number): string {
   const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps']
   let i = 0

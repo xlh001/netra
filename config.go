@@ -17,6 +17,7 @@ type ConfigDTO struct {
 	DBFlowTopK    int `json:"dbFlowTopK"`
 	TopKPerBucket int `json:"topKPerBucket"`
 
+	AnomalyEnabled             bool    `json:"anomalyEnabled"`
 	AnomalyWindowSec           int     `json:"anomalyWindowSec"`
 	AnomalyPeerThreshold       int     `json:"anomalyPeerThreshold"`
 	AnomalyAvgPacketsThreshold float64 `json:"anomalyAvgPacketsThreshold"`
@@ -43,6 +44,7 @@ func defaultConfig() *Config {
 		PersistScanAlerts:          true,
 		DBFlowTopK:                 defaultDBFlowTopK,
 		TopKPerBucket:              defaultTopKPerBucket,
+		AnomalyEnabled:             false,
 		AnomalyWindowSec:           int(defaultAnomalyWindow / time.Second),
 		AnomalyPeerThreshold:       defaultAnomalyPeerThreshold,
 		AnomalyAvgPacketsThreshold: defaultAnomalyAvgPacketsThreshold,
@@ -66,7 +68,7 @@ func (c *Config) Apply(dto ConfigDTO) {
 
 func applyAnomalyConfig(agg *aggregator, cfg *Config) {
 	v := cfg.Snapshot()
-	agg.UpdateAnomalyConfig(time.Duration(v.AnomalyWindowSec)*time.Second, v.AnomalyPeerThreshold, v.AnomalyAvgPacketsThreshold, v.VolumeThresholdBytes)
+	agg.UpdateAnomalyConfig(v.AnomalyEnabled, time.Duration(v.AnomalyWindowSec)*time.Second, v.AnomalyPeerThreshold, v.AnomalyAvgPacketsThreshold, v.VolumeThresholdBytes)
 }
 
 func applyCapacityConfig(agg *aggregator, cfg *Config) {

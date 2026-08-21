@@ -310,7 +310,11 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
     const boxW = chartDom?.clientWidth || 400
     const boxH = chartDom?.clientHeight || 300
     const spread = Math.min(boxW, boxH)
-    const repulsion = Math.max(140, spread * 1.1)
+    // Repulsion needs to grow with node count too, not just container size --
+    // a fixed floor crowds nodes together (overlapping circles/labels) once
+    // there are enough hosts to fill the space regardless of how big the
+    // container is.
+    const repulsion = Math.max(140, spread * 1.1, nodes.length * 9)
     const edgeLen: [number, number] = [Math.max(50, spread * 0.18), Math.max(130, spread * 0.6)]
 
     const labeledIPs = new Set(
@@ -345,6 +349,10 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
             layout: 'force',
             roam: true,
             draggable: false,
+            // Nudged up/right of dead-center: the .mip info card overlays the
+            // bottom-left corner of this chart, so bias the force layout's
+            // settling point away from there instead of the true center.
+            center: ['58%', '42%'],
             force: { repulsion, edgeLength: edgeLen, gravity: 0.08, friction: 0.5 },
             symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 10 + params.data.sizeQ * 20,
             itemStyle: { color: '#35e0ff', shadowBlur: 8, shadowColor: '#35e0ff', borderColor: 'rgba(255,207,92,0.7)', borderWidth: 1 },

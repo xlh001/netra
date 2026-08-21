@@ -79,6 +79,8 @@ export const STRINGS = {
   settingsPageTitle: '系统配置', settingsSectionGeneral: '常规', settingsSectionThreat: '威胁感知',
   settingsRefreshInterval: '刷新间隔（毫秒）',
   settingsRefreshIntervalHint: '控制"可视化"大屏页面自动拉取最新数据的频率，默认5秒，不影响流量详情/威胁感知等历史查询页面。',
+  settingsAnomalyEnabled: '启用威胁检测',
+  settingsAnomalyEnabledHint: '默认关闭。开启后下面的阈值才会生效——大流量环境建议先按自己的实际流量调好阈值再开启，否则刚开启可能会看到大量误报。',
   settingsPersistAlerts: '威胁告警落库',
   settingsSectionThreatPeer: '端口/主机扫描 · DDoS',
   settingsSectionThreatPeerDesc: '单个源IP（或目标IP）在滑动窗口内碰了多少个不同的目标（或源）——用于识别端口/主机扫描或疑似DDoS。',

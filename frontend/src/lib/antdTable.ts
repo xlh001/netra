@@ -30,7 +30,7 @@ export function tablePagination(
   }
   if (sequentialOnly) {
     const totalPages = Math.max(1, Math.ceil(total / pageSize))
-    config.showTotal = () => `第 ${page + 1} / ${totalPages} 页`
+    config.showTotal = (t_total) => `${t('tableTotal', { total: t_total })} · 第 ${page + 1} / ${totalPages} 页`
     config.itemRender = (_page, type, originalElement) => {
       if (type === 'prev' || type === 'next') return originalElement
       return null

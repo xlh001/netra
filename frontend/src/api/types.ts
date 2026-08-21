@@ -189,6 +189,7 @@ export interface ConfigDTO {
   dbFlowTopK: number
   topKPerBucket: number
 
+  anomalyEnabled: boolean
   anomalyWindowSec: number
   anomalyPeerThreshold: number
   anomalyAvgPacketsThreshold: number

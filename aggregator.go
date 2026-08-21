@@ -56,6 +56,7 @@ type aggregator struct {
 	ddosSrcs     map[uint32]map[uint32]scanDestEntry
 	volumeTotals map[uint32][]volumeSample
 
+	anomalyEnabled             bool
 	anomalyWindow              time.Duration
 	anomalyPeerThreshold       int
 	anomalyAvgPacketsThreshold float64
@@ -105,13 +106,20 @@ func newAggregator(interval time.Duration) *aggregator {
 	}
 }
 
-func (a *aggregator) UpdateAnomalyConfig(window time.Duration, peerThreshold int, avgPacketsThreshold float64, volumeThresholdBytes uint64) {
+func (a *aggregator) UpdateAnomalyConfig(enabled bool, window time.Duration, peerThreshold int, avgPacketsThreshold float64, volumeThresholdBytes uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	wasEnabled := a.anomalyEnabled
+	a.anomalyEnabled = enabled
 	a.anomalyWindow = window
 	a.anomalyPeerThreshold = peerThreshold
 	a.anomalyAvgPacketsThreshold = avgPacketsThreshold
 	a.volumeThresholdBytes = volumeThresholdBytes
+	if wasEnabled && !enabled {
+		a.scanDests = map[uint32]map[uint32]scanDestEntry{}
+		a.ddosSrcs = map[uint32]map[uint32]scanDestEntry{}
+		a.volumeTotals = map[uint32][]volumeSample{}
+	}
 }
 
 func (a *aggregator) UpdateCapacityConfig(dbFlowTopK, topKPerBucket int) {
@@ -138,6 +146,10 @@ func (a *aggregator) cleanupDomainsLocked(cutoff time.Time) {
 func (a *aggregator) recordAnomalyCandidates(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlowStats) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	if !a.anomalyEnabled {
+		return
+	}
 
 	for k, s := range cur {
 		dests := a.scanDests[k.Saddr]
@@ -233,6 +245,9 @@ func (a *aggregator) threatAlerts() []ThreatAlert {
 }
 
 func (a *aggregator) threatAlertsLocked() []ThreatAlert {
+	if !a.anomalyEnabled {
+		return nil
+	}
 	var peerAlerts []ThreatAlert
 	for src, dests := range a.scanDests {
 		if len(dests) < a.anomalyPeerThreshold {
