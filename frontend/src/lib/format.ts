@@ -12,15 +12,14 @@ export function formatBytes(n: number): string {
 }
 
 export function formatCount(n: number): string {
-  const units = ['', 'K', 'M', 'B', 'T']
-  if (n < 1000) return Math.round(n).toLocaleString()
-  let i = 0
-  let v = n
-  while (v >= 1000 && i < units.length - 1) {
-    v /= 1000
-    i++
-  }
-  return v.toFixed(2) + units[i]
+  // Chinese magnitude units (万/亿), not K/M/B/T -- this dashboard is
+  // Chinese-only, and "B" here would collide with formatBytes' "B" (Byte)
+  // on the same screen despite meaning something completely different
+  // (Billion).
+  if (n < 10000) return Math.round(n).toLocaleString()
+  if (n < 1e8) return (n / 1e4).toFixed(2) + '万'
+  if (n < 1e12) return (n / 1e8).toFixed(2) + '亿'
+  return (n / 1e12).toFixed(2) + '万亿'
 }
 
 export function formatBps(bps: number): string {
@@ -44,6 +43,19 @@ export function rangeToSeconds(range: { kind: 'window'; window: string } | { kin
   return range.kind === 'custom' ? Math.max(1, range.to - range.from) : windowToSeconds(range.window)
 }
 
+const OTHER_PROTO_PALETTE = [
+  '#ff5d7a', '#2ee6a8', '#f472b6', '#4fd1c5', '#e8c869',
+  '#c874ff', '#6ea8ff', '#7fdcae', '#ff9e6d', '#8a7355',
+]
+
+function hashString(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0
+  }
+  return Math.abs(h)
+}
+
 export function protoColor(name: string): string {
   switch (name) {
     case 'tcp':
@@ -53,7 +65,7 @@ export function protoColor(name: string): string {
     case 'icmp':
       return '#ffb454'
     default:
-      return '#ff5d7a'
+      return OTHER_PROTO_PALETTE[hashString(name) % OTHER_PROTO_PALETTE.length]
   }
 }
 

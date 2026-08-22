@@ -14,6 +14,7 @@ export const STRINGS = {
   mipFlowsHead: '关联流量（Top10范围内）', mipNoFlows: '未进入当前Top10流量明细',
   tipDegreeLbl: '连接数', tipPeersHead: '关联主机（Top3）', tipNoPeers: '暂无关联主机',
   colSrc: '源', colDst: '目的', colProto: '协议', colSvc: '服务', colDomain: '域名', colPackets: '包数', colBytes: '流量',
+  protoOther: '其他',
   noData: '这个时间窗口内没有数据', noDataShort: '无数据',
   mapDisabledBig: '世界地图未启用',
   mapDisabledSmall: '启动时加上 -geoip-db /path/to/GeoLite2-City.mmdb 即可开启',

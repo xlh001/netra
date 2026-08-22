@@ -890,16 +890,15 @@ type ChatSession struct {
 }
 
 type ChatMessage struct {
-	ID        int       `json:"id"`
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	ToolCalls []string  `json:"toolCalls,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-
-	Model            string `json:"model,omitempty"`
-	ElapsedMs        int64  `json:"elapsedMs,omitempty"`
-	PromptTokens     int    `json:"promptTokens,omitempty"`
-	CompletionTokens int    `json:"completionTokens,omitempty"`
+	ID               int       `json:"id"`
+	Role             string    `json:"role"`
+	Content          string    `json:"content"`
+	ToolCalls        []string  `json:"toolCalls,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
+	Model            string    `json:"model,omitempty"`
+	ElapsedMs        int64     `json:"elapsedMs,omitempty"`
+	PromptTokens     int       `json:"promptTokens,omitempty"`
+	CompletionTokens int       `json:"completionTokens,omitempty"`
 }
 
 func (s *Store) CreateChatSession(userID int) (ChatSession, error) {

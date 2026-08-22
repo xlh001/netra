@@ -1,0 +1,79 @@
+<svg width="2000" height="1200" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: 700 17px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #141A21; }
+    .stat-label { font: 400 12px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #5C6B78; }
+    .stat-value { font: 700 26px "SF Mono", Menlo, Consolas, monospace; fill: #0C8599; }
+    .stat-value-sm { font: 700 20px "SF Mono", Menlo, Consolas, monospace; fill: #0C8599; }
+    .axis-label { font: 400 11px "SF Mono", Menlo, Consolas, monospace; fill: #7C8996; }
+    .bar-label { font: 600 13px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #141A21; text-anchor: middle; }
+    .bar-value { font: 600 12px "SF Mono", Menlo, Consolas, monospace; text-anchor: middle; fill: #0C8599; }
+    .grid-line { stroke: #E5E9ED; stroke-width: 1; }
+    .caption { font: 400 12px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #7C8996; }
+    .measured-tag { font: 600 11px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #1E9E5C; text-anchor: middle; }
+  </style>
+
+  <rect x="0" y="0" width="1000" height="600" fill="#F6F8FA"/>
+  <rect x="20" y="20" width="960" height="560" rx="12" fill="#FFFFFF" stroke="#D7DFE4" stroke-width="1.2"/>
+
+  <text x="48" y="66" class="title">流量采集性能压测 · 20Gbps 生产专线实测</text>
+
+  <!-- 三个统计卡片 -->
+  <rect x="48" y="90" width="286" height="110" rx="8" fill="#F6F8FA" stroke="#D7DFE4" stroke-width="1"/>
+  <text x="72" y="122" class="stat-label">线路容量（双物理口）</text>
+  <text x="72" y="160" class="stat-value">20 Gbps</text>
+  <text x="72" y="182" class="stat-label" style="font-size:10.5px">两台核心交换机独立镜像</text>
+
+  <rect x="357" y="90" width="286" height="110" rx="8" fill="#E4F4F7" stroke="#0C8599" stroke-width="1.4"/>
+  <text x="381" y="122" class="stat-label">实测流量（并未跑满）</text>
+  <text x="381" y="158" class="stat-value-sm">10.1 Gbps</text>
+  <text x="381" y="182" class="stat-value-sm">160万 pps</text>
+
+  <rect x="666" y="90" width="286" height="110" rx="8" fill="#F6F8FA" stroke="#D7DFE4" stroke-width="1"/>
+  <text x="690" y="122" class="stat-label">40 核机器 CPU 占用</text>
+  <text x="690" y="160" class="stat-value">~3%</text>
+  <text x="690" y="182" class="stat-label" style="font-size:10.5px">约 1.2 个核，无丢包</text>
+
+  <!-- 柱状图：按核数折算 -->
+  <text x="48" y="232" class="title" style="font-size:14px">同等真实流量下，按核数折算的 CPU 占用</text>
+
+  <line x1="110" y1="490" x2="920" y2="490" class="grid-line"/>
+  <line x1="110" y1="430" x2="920" y2="430" class="grid-line"/>
+  <line x1="110" y1="370" x2="920" y2="370" class="grid-line"/>
+  <line x1="110" y1="310" x2="920" y2="310" class="grid-line"/>
+  <line x1="110" y1="250" x2="920" y2="250" class="grid-line"/>
+  <text x="100" y="494" text-anchor="end" class="axis-label">0%</text>
+  <text x="100" y="434" text-anchor="end" class="axis-label">20%</text>
+  <text x="100" y="374" text-anchor="end" class="axis-label">40%</text>
+  <text x="100" y="314" text-anchor="end" class="axis-label">60%</text>
+  <text x="100" y="254" text-anchor="end" class="axis-label">80%</text>
+  <line x1="110" y1="250" x2="110" y2="490" stroke="#D7DFE4" stroke-width="1.2"/>
+
+  <!-- 2核 60% -->
+  <rect x="150" y="310" width="90" height="180" rx="3" fill="#0C8599"/>
+  <text x="195" y="303" class="bar-value">60%</text>
+  <text x="195" y="510" class="bar-label">2核</text>
+
+  <!-- 4核 30% -->
+  <rect x="310" y="400" width="90" height="90" rx="3" fill="#0C8599"/>
+  <text x="355" y="393" class="bar-value">30%</text>
+  <text x="355" y="510" class="bar-label">4核</text>
+
+  <!-- 8核 15% -->
+  <rect x="470" y="445" width="90" height="45" rx="3" fill="#0C8599"/>
+  <text x="515" y="438" class="bar-value">15%</text>
+  <text x="515" y="510" class="bar-label">8核</text>
+
+  <!-- 16核 7.5% -->
+  <rect x="630" y="467" width="90" height="23" rx="3" fill="#0C8599"/>
+  <text x="675" y="460" class="bar-value">7.5%</text>
+  <text x="675" y="510" class="bar-label">16核</text>
+
+  <!-- 40核 3%（实际测试机型，非折算） -->
+  <rect x="790" y="481" width="90" height="9" rx="3" fill="#35C97A"/>
+  <text x="835" y="455" class="measured-tag">实际测试</text>
+  <text x="835" y="474" class="bar-value" fill="#1E9E5C">3%</text>
+  <text x="835" y="510" class="bar-label">40核</text>
+
+  <text x="48" y="548" class="caption">内存/磁盘不随核数或流量大小变化，由 -db-retention 与采集上限（per-tick cap）决定，</text>
+  <text x="48" y="566" class="caption">默认约 1-2GB / 30GB（详见 README）。</text>
+</svg>

@@ -8,6 +8,7 @@ import type { Timeseries } from '../../api/types'
 const chartBaseText = { color: '#8b93a0', fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", monospace', fontSize: 10.5 }
 
 const DAY_MS = 24 * 3600 * 1000
+const PROTO_TOP_N = 8
 
 function formatAxisTime(ts: number, spanMs: number): string {
   const d = new Date(ts)
@@ -26,9 +27,21 @@ export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | n
     if (!chart) return
     const points = timeseries?.points ?? []
 
-    const protoSet = new Set<string>()
-    points.forEach((p) => Object.keys(p.bytes || {}).forEach((k) => protoSet.add(k)))
-    const protos = Array.from(protoSet).sort()
+    // Same reasoning as ProtocolPie: proto is a raw IP protocol number for
+    // anything without a friendly name, and a busy/noisy mirror can surface
+    // many distinct ones. Cap the legend/series to the top N by total
+    // bytes, fold the rest into one combined "其他" series instead of
+    // letting the legend grow unbounded.
+    const totalsByProto = new Map<string, number>()
+    points.forEach((p) => {
+      for (const [proto, bytes] of Object.entries(p.bytes || {})) {
+        totalsByProto.set(proto, (totalsByProto.get(proto) ?? 0) + bytes)
+      }
+    })
+    const sortedProtos = Array.from(totalsByProto.entries()).sort((a, b) => b[1] - a[1])
+    const topProtos = sortedProtos.slice(0, PROTO_TOP_N).map(([proto]) => proto)
+    const restProtos = sortedProtos.slice(PROTO_TOP_N).map(([proto]) => proto)
+    const protos = topProtos.slice().sort()
 
     const spanMs = points.length > 1 ? new Date(points[points.length - 1].time).getTime() - new Date(points[0].time).getTime() : 0
     const xData = points.map((p) => formatAxisTime(new Date(p.time).getTime(), spanMs))
@@ -44,13 +57,28 @@ export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | n
       emphasis: { focus: 'series' as const },
       data: points.map((p) => p.bytes?.[proto] ?? 0),
     }))
+    if (restProtos.length > 0) {
+      series.push({
+        name: t('protoOther'),
+        type: 'line' as const,
+        stack: 'total',
+        smooth: true,
+        symbol: 'none',
+        areaStyle: { opacity: 0.55 },
+        lineStyle: { width: 1.5, color: '#5c6b78' },
+        itemStyle: { color: '#5c6b78' },
+        emphasis: { focus: 'series' as const },
+        data: points.map((p) => restProtos.reduce((sum, proto) => sum + (p.bytes?.[proto] ?? 0), 0)),
+      })
+    }
+    const legendData = protos.map((p) => p.toUpperCase()).concat(restProtos.length > 0 ? [t('protoOther')] : [])
 
     chart.setOption(
       {
         backgroundColor: 'transparent',
         textStyle: chartBaseText,
         grid: { left: 10, right: 14, top: 26, bottom: 20, containLabel: true },
-        legend: { data: protos.map((p) => p.toUpperCase()), top: 0, right: 0, textStyle: chartBaseText, itemWidth: 9, itemHeight: 9 },
+        legend: { data: legendData, top: 0, right: 0, textStyle: chartBaseText, itemWidth: 9, itemHeight: 9 },
         tooltip: {
           trigger: 'axis',
           backgroundColor: '#131720',

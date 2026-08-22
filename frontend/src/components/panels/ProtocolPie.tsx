@@ -5,6 +5,8 @@ import { useEchart } from '../../hooks/useEchart'
 import { formatBytes, protoColor } from '../../lib/format'
 import type { Timeseries } from '../../api/types'
 
+const PROTO_TOP_N = 8
+
 export function ProtocolPie({ timeseries, loading }: { timeseries: Timeseries | null; loading?: boolean }) {
   const t = useT()
   const divRef = useRef<HTMLDivElement>(null)
@@ -17,10 +19,21 @@ export function ProtocolPie({ timeseries, loading }: { timeseries: Timeseries | 
         totals.set(proto, (totals.get(proto) ?? 0) + bytes)
       }
     }
-    return Array.from(totals.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([proto, bytes]) => ({ name: proto.toUpperCase(), value: bytes, itemStyle: { color: protoColor(proto) } }))
-  }, [timeseries])
+    // proto is a raw IP protocol number (uint8) for anything without a
+    // friendly name (TCP/UDP/ICMP) -- real networks routinely carry a
+    // handful of extras (VRRP, OSPF, GRE, ESP...), and a busy/noisy mirror
+    // can surface many more. Cap the legend/slices to the top N by bytes,
+    // fold the rest into one "其他" entry instead of letting it grow
+    // unbounded.
+    const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
+    const top = sorted.slice(0, PROTO_TOP_N)
+    const rest = sorted.slice(PROTO_TOP_N)
+    const result = top.map(([proto, bytes]) => ({ name: proto.toUpperCase(), value: bytes, itemStyle: { color: protoColor(proto) } }))
+    if (rest.length > 0) {
+      result.push({ name: t('protoOther'), value: rest.reduce((sum, [, bytes]) => sum + bytes, 0), itemStyle: { color: '#5c6b78' } })
+    }
+    return result
+  }, [timeseries, t])
 
   useEffect(() => {
     const chart = chartRef.current
