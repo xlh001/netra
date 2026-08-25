@@ -27,11 +27,6 @@ export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | n
     if (!chart) return
     const points = timeseries?.points ?? []
 
-    // Same reasoning as ProtocolPie: proto is a raw IP protocol number for
-    // anything without a friendly name, and a busy/noisy mirror can surface
-    // many distinct ones. Cap the legend/series to the top N by total
-    // bytes, fold the rest into one combined "其他" series instead of
-    // letting the legend grow unbounded.
     const totalsByProto = new Map<string, number>()
     points.forEach((p) => {
       for (const [proto, bytes] of Object.entries(p.bytes || {})) {

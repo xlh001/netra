@@ -19,12 +19,6 @@ export function ProtocolPie({ timeseries, loading }: { timeseries: Timeseries | 
         totals.set(proto, (totals.get(proto) ?? 0) + bytes)
       }
     }
-    // proto is a raw IP protocol number (uint8) for anything without a
-    // friendly name (TCP/UDP/ICMP) -- real networks routinely carry a
-    // handful of extras (VRRP, OSPF, GRE, ESP...), and a busy/noisy mirror
-    // can surface many more. Cap the legend/slices to the top N by bytes,
-    // fold the rest into one "其他" entry instead of letting it grow
-    // unbounded.
     const sorted = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])
     const top = sorted.slice(0, PROTO_TOP_N)
     const rest = sorted.slice(PROTO_TOP_N)

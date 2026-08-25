@@ -12,10 +12,6 @@ export function formatBytes(n: number): string {
 }
 
 export function formatCount(n: number): string {
-  // Chinese magnitude units (万/亿), not K/M/B/T -- this dashboard is
-  // Chinese-only, and "B" here would collide with formatBytes' "B" (Byte)
-  // on the same screen despite meaning something completely different
-  // (Billion).
   if (n < 10000) return Math.round(n).toLocaleString()
   if (n < 1e8) return (n / 1e4).toFixed(2) + '万'
   if (n < 1e12) return (n / 1e8).toFixed(2) + '亿'

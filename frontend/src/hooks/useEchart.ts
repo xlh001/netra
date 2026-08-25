@@ -1,6 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import type { ECharts } from 'echarts/core'
-import echarts from '../lib/echarts'
+import echarts, { guardZeroSizePaint } from '../lib/echarts'
 
 export function useEchart(containerRef: RefObject<HTMLDivElement | null>): RefObject<ECharts | null> {
   const chartRef = useRef<ECharts | null>(null)
@@ -9,6 +9,7 @@ export function useEchart(containerRef: RefObject<HTMLDivElement | null>): RefOb
     const el = containerRef.current
     if (!el) return
     const chart = echarts.init(el, null, { renderer: 'canvas' })
+    guardZeroSizePaint(chart, el)
     chartRef.current = chart
     const onResize = () => chart.resize()
     window.addEventListener('resize', onResize)

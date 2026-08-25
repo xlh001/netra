@@ -301,8 +301,6 @@ func ntohs(v uint16) uint16 {
 	return (v << 8) | (v >> 8)
 }
 
-// ianaProtoNames maps IANA-assigned IP protocol numbers to their short names.
-// https://www.iana.org/assignments/protocol-numbers
 var ianaProtoNames = map[uint8]string{
 	0: "hopopt", 1: "icmp", 2: "igmp", 3: "ggp", 4: "ipip", 5: "st", 6: "tcp",
 	7: "cbt", 8: "egp", 9: "igp", 10: "bbn-rcc-mon", 11: "nvp-ii", 12: "pup",

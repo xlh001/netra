@@ -35,7 +35,7 @@ export function Dashboard({ isFullscreen }: { isFullscreen: boolean }) {
         </div>
       )}
 
-      <div className="main">
+      <div className="main" key={String(isFullscreen)}>
         <div className="col">
           <Overview report={report} />
           <FlowRateChart flowRate={flowRate} />

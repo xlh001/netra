@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../i18n/context'
-import echarts from '../../lib/echarts'
+import echarts, { guardZeroSizePaint } from '../../lib/echarts'
 import { COUNTRY_CENTROIDS, MAP_HUB, aggregateByCountry, stableVisualBytes, type CountryTotal } from '../../lib/geo'
 import { countryName, flagIconSrc, formatBytes } from '../../lib/format'
 import type { FlowStat, GeoReport, Topology, TopologyNode } from '../../api/types'
@@ -66,6 +66,8 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
     if (!mapEl || !topoEl) return
     const mapChart = echarts.init(mapEl, null, { renderer: 'canvas' })
     const topoChart = echarts.init(topoEl, null, { renderer: 'canvas' })
+    guardZeroSizePaint(mapChart, mapEl)
+    guardZeroSizePaint(topoChart, topoEl)
     mapChartRef.current = mapChart
     topoChartRef.current = topoChart
 
@@ -120,7 +122,9 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
     if (!mapChart) return
     lastGeoReportRef.current = geo
 
-    if (!geo || !geo.enabled) {
+    if (!geo) return
+
+    if (!geo.enabled) {
       lastGeoEnabledRef.current = false
       lastMapHasTrafficRef.current = false
       setMapEmpty('disabled')
