@@ -20,6 +20,7 @@ import {
   listMCPServerTools,
   listWebhooks,
   testAI,
+  testKafka,
   testMCPServer,
   testWebhook,
   updateIPTag,
@@ -323,6 +324,25 @@ function AITab({ t, form, config }: { t: T; form: FormInstance<ConfigDTO>; confi
 
 function KafkaTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
   const kafkaEnabled = Form.useWatch('kafkaEnabled', form)
+  const [testing, setTesting] = useState(false)
+
+  async function handleTest() {
+    const { kafkaBrokers, kafkaTopic, kafkaSaslUsername, kafkaSaslPassword, kafkaTls } = form.getFieldsValue()
+    if (!kafkaBrokers || !kafkaTopic) {
+      message.warning(t('kafkaTestNeedsFields'))
+      return
+    }
+    setTesting(true)
+    try {
+      const res = await testKafka(kafkaBrokers, kafkaTopic, kafkaSaslUsername ?? '', kafkaSaslPassword ?? '', kafkaTls ?? false)
+      message.success(t('kafkaTestSuccess') + `（${res.partitions} 个分区）`)
+    } catch (err) {
+      message.error(t('kafkaTestFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setTesting(false)
+    }
+  }
+
   return (
     <>
       <Form.Item label={t('kafkaEnabled')} name="kafkaEnabled" valuePropName="checked" extra={t('kafkaEnabledHint')}>
@@ -345,8 +365,16 @@ function KafkaTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
       <Form.Item label={t('kafkaSaslPassword')} name="kafkaSaslPassword">
         <Input.Password />
       </Form.Item>
-      <Form.Item label={t('kafkaTls')} name="kafkaTls" valuePropName="checked">
+      <Form.Item label={t('kafkaTls')} name="kafkaTls" valuePropName="checked" extra={t('kafkaTlsHint')}>
         <Switch />
+      </Form.Item>
+      <Form.Item label={t('kafkaFlowTopK')} name="kafkaFlowTopK" rules={kafkaEnabled ? [{ required: true }] : []} extra={t('kafkaFlowTopKHint')}>
+        <InputNumber min={0} style={{ width: '100%' }} />
+      </Form.Item>
+      <Form.Item>
+        <Button onClick={handleTest} loading={testing}>
+          {t('kafkaTestButton')}
+        </Button>
       </Form.Item>
     </>
   )

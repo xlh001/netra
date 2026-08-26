@@ -10,6 +10,8 @@ const defaultTopKPerBucket = 200
 
 const defaultDBFlowTopK = 2000
 
+const defaultKafkaFlowTopK = 0
+
 const maxRetention = 1 * time.Hour
 
 const (
@@ -65,6 +67,7 @@ type aggregator struct {
 
 	topKPerBucket int
 	dbFlowTopK    int
+	kafkaFlowTopK int
 }
 
 func (a *aggregator) recordReadFailure(now time.Time) {
@@ -103,6 +106,7 @@ func newAggregator(interval time.Duration) *aggregator {
 		volumeThresholdBytes:       defaultVolumeThresholdBytes,
 		topKPerBucket:              defaultTopKPerBucket,
 		dbFlowTopK:                 defaultDBFlowTopK,
+		kafkaFlowTopK:              defaultKafkaFlowTopK,
 	}
 }
 
@@ -122,11 +126,12 @@ func (a *aggregator) UpdateAnomalyConfig(enabled bool, window time.Duration, pee
 	}
 }
 
-func (a *aggregator) UpdateCapacityConfig(dbFlowTopK, topKPerBucket int) {
+func (a *aggregator) UpdateCapacityConfig(dbFlowTopK, topKPerBucket, kafkaFlowTopK int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.dbFlowTopK = dbFlowTopK
 	a.topKPerBucket = topKPerBucket
+	a.kafkaFlowTopK = kafkaFlowTopK
 }
 
 func (a *aggregator) recordDomain(key xdpflowFlowKey, hostname string) {
@@ -300,6 +305,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 	a.mu.Lock()
 	dbFlowTopK := a.dbFlowTopK
 	topKPerBucket := a.topKPerBucket
+	kafkaFlowTopK := a.kafkaFlowTopK
 	a.mu.Unlock()
 
 	protoPackets := map[uint8]uint64{}
@@ -346,6 +352,11 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		dbCut = dbFlowTopK
 	}
 	dbFlows := activeFlows[:dbCut]
+	kafkaCut := len(activeFlows)
+	if kafkaFlowTopK > 0 && kafkaCut > kafkaFlowTopK {
+		kafkaCut = kafkaFlowTopK
+	}
+	kafkaFlowsRaw := activeFlows[:kafkaCut]
 	memCut := len(activeFlows)
 	if memCut > topKPerBucket {
 		memCut = topKPerBucket
@@ -376,6 +387,10 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 	for i, f := range dbFlows {
 		dbFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname}
 	}
+	kafkaFlowSamples := make([]flowSample, len(kafkaFlowsRaw))
+	for i, f := range kafkaFlowsRaw {
+		kafkaFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname}
+	}
 
 	a.buckets = append(a.buckets, b)
 	cutoff := now.Add(-maxRetention)
@@ -393,6 +408,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		protoPackets:      protoPackets,
 		protoBytes:        protoBytes,
 		flows:             dbFlowSamples,
+		kafkaFlows:        kafkaFlowSamples,
 		ips:               ips,
 		ports:             ports,
 		distinctFlowCount: distinctFlowCount,

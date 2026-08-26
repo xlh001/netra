@@ -30,6 +30,7 @@ type tickSnapshot struct {
 	protoPackets      map[uint8]uint64
 	protoBytes        map[uint8]uint64
 	flows             []flowSample
+	kafkaFlows        []flowSample
 	ips               map[uint32]xdpflowFlowStats
 	ports             map[portKey]xdpflowFlowStats
 	distinctFlowCount int
@@ -289,6 +290,13 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 		{"ai_base_url", "ALTER TABLE app_config ADD COLUMN ai_base_url TEXT NOT NULL DEFAULT ''"},
 		{"ai_api_key", "ALTER TABLE app_config ADD COLUMN ai_api_key TEXT NOT NULL DEFAULT ''"},
 		{"ai_model", "ALTER TABLE app_config ADD COLUMN ai_model TEXT NOT NULL DEFAULT ''"},
+		{"kafka_enabled", "ALTER TABLE app_config ADD COLUMN kafka_enabled INTEGER NOT NULL DEFAULT 0"},
+		{"kafka_brokers", "ALTER TABLE app_config ADD COLUMN kafka_brokers TEXT NOT NULL DEFAULT ''"},
+		{"kafka_topic", "ALTER TABLE app_config ADD COLUMN kafka_topic TEXT NOT NULL DEFAULT ''"},
+		{"kafka_sasl_username", "ALTER TABLE app_config ADD COLUMN kafka_sasl_username TEXT NOT NULL DEFAULT ''"},
+		{"kafka_sasl_password", "ALTER TABLE app_config ADD COLUMN kafka_sasl_password TEXT NOT NULL DEFAULT ''"},
+		{"kafka_tls", "ALTER TABLE app_config ADD COLUMN kafka_tls INTEGER NOT NULL DEFAULT 0"},
+		{"kafka_flow_topk", "ALTER TABLE app_config ADD COLUMN kafka_flow_topk INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if existing[col.name] {
 			continue
@@ -474,14 +482,16 @@ func ensureThreatAlertsSchema(db *sql.DB) error {
 }
 
 func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
-	var persistScanAlerts, anomalyEnabled, aiEnabled int
+	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS int
 	row := s.db.QueryRow(`SELECT refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
-		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model
+		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
+		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk
 		FROM app_config WHERE id = 1`)
 	if err := row.Scan(&dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
 		&anomalyEnabled, &dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
-		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel); err != nil {
+		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel,
+		&kafkaEnabled, &dto.KafkaBrokers, &dto.KafkaTopic, &dto.KafkaSASLUsername, &dto.KafkaSASLPassword, &kafkaTLS, &dto.KafkaFlowTopK); err != nil {
 		if err == sql.ErrNoRows {
 			return ConfigDTO{}, false, nil
 		}
@@ -490,6 +500,8 @@ func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
 	dto.PersistScanAlerts = persistScanAlerts != 0
 	dto.AnomalyEnabled = anomalyEnabled != 0
 	dto.AIEnabled = aiEnabled != 0
+	dto.KafkaEnabled = kafkaEnabled != 0
+	dto.KafkaTLS = kafkaTLS != 0
 	return dto, true, nil
 }
 
@@ -506,14 +518,24 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	if dto.AIEnabled {
 		aiEnabled = 1
 	}
+	kafkaEnabled := 0
+	if dto.KafkaEnabled {
+		kafkaEnabled = 1
+	}
+	kafkaTLS := 0
+	if dto.KafkaTLS {
+		kafkaTLS = 1
+	}
 	res, err := s.db.Exec(`UPDATE app_config SET
 		refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
 		anomaly_enabled = ?, anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
-		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?
+		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?,
+		kafka_enabled = ?, kafka_brokers = ?, kafka_topic = ?, kafka_sasl_username = ?, kafka_sasl_password = ?, kafka_tls = ?, kafka_flow_topk = ?
 		WHERE id = 1`,
 		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
-		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel)
+		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
+		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK)
 	if err != nil {
 		return fmt.Errorf("update app_config: %w", err)
 	}
@@ -524,11 +546,13 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	_, err = s.db.Exec(`INSERT INTO app_config(
 		id, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
-		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
+		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
-		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel)
+		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
+		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK)
 	if err != nil {
 		return fmt.Errorf("insert app_config: %w", err)
 	}

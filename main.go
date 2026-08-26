@@ -188,7 +188,7 @@ func main() {
 	applyAnomalyConfig(agg, cfg)
 	applyCapacityConfig(agg, cfg)
 
-	kafkaExp := &kafkaExporter{}
+	kafkaExp := newKafkaExporter()
 	defer kafkaExp.Close()
 	applyKafkaConfig(kafkaExp, cfg)
 

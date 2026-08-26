@@ -155,6 +155,16 @@ export function testAI(baseURL: string, apiKey: string, model: string): Promise<
   return sendJSON<void>('/api/admin/ai/test', 'POST', { baseURL, apiKey, model })
 }
 
+export function testKafka(
+  kafkaBrokers: string,
+  kafkaTopic: string,
+  kafkaSaslUsername: string,
+  kafkaSaslPassword: string,
+  kafkaTls: boolean
+): Promise<{ partitions: number }> {
+  return sendJSON<{ partitions: number }>('/api/admin/kafka/test', 'POST', { kafkaBrokers, kafkaTopic, kafkaSaslUsername, kafkaSaslPassword, kafkaTls })
+}
+
 export function listChatSessions(): Promise<ChatSession[]> {
   return getJSON<ChatSession[]>('/api/admin/ai/chat/sessions')
 }

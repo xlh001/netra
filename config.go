@@ -36,6 +36,7 @@ type ConfigDTO struct {
 	KafkaSASLUsername string `json:"kafkaSaslUsername,omitempty"`
 	KafkaSASLPassword string `json:"kafkaSaslPassword,omitempty"`
 	KafkaTLS          bool   `json:"kafkaTls"`
+	KafkaFlowTopK     int    `json:"kafkaFlowTopK"`
 }
 
 func defaultConfig() *Config {
@@ -51,6 +52,7 @@ func defaultConfig() *Config {
 		VolumeThresholdBytes:       defaultVolumeThresholdBytes,
 		AIEnabled:                  false,
 		KafkaEnabled:               false,
+		KafkaFlowTopK:              defaultKafkaFlowTopK,
 	}}
 }
 
@@ -73,5 +75,5 @@ func applyAnomalyConfig(agg *aggregator, cfg *Config) {
 
 func applyCapacityConfig(agg *aggregator, cfg *Config) {
 	v := cfg.Snapshot()
-	agg.UpdateCapacityConfig(v.DBFlowTopK, v.TopKPerBucket)
+	agg.UpdateCapacityConfig(v.DBFlowTopK, v.TopKPerBucket, v.KafkaFlowTopK)
 }

@@ -208,6 +208,7 @@ export interface ConfigDTO {
   kafkaSaslUsername?: string
   kafkaSaslPassword?: string
   kafkaTls: boolean
+  kafkaFlowTopK: number
 }
 
 export type AIProvider = 'openai' | 'deepseek' | 'qwen' | 'moonshot' | 'glm' | 'doubao' | 'ollama' | 'custom' | ''

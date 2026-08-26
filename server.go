@@ -354,6 +354,35 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
+	mux.Handle("POST /api/admin/kafka/test", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			KafkaBrokers      string `json:"kafkaBrokers"`
+			KafkaTopic        string `json:"kafkaTopic"`
+			KafkaSASLUsername string `json:"kafkaSaslUsername"`
+			KafkaSASLPassword string `json:"kafkaSaslPassword"`
+			KafkaTLS          bool   `json:"kafkaTls"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		partitions, err := testKafkaConnection(ConfigDTO{
+			KafkaBrokers:      req.KafkaBrokers,
+			KafkaTopic:        req.KafkaTopic,
+			KafkaSASLUsername: req.KafkaSASLUsername,
+			KafkaSASLPassword: req.KafkaSASLPassword,
+			KafkaTLS:          req.KafkaTLS,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Partitions int `json:"partitions"`
+		}{partitions})
+	}))
+
 	mux.Handle("GET /api/admin/ai/chat/sessions", adminOnly(func(w http.ResponseWriter, r *http.Request) {
 		claims, _ := claimsFromContext(r.Context())
 		sessions, err := store.ListChatSessions(claims.UserID)
@@ -1172,6 +1201,9 @@ func validateConfig(dto ConfigDTO) error {
 	}
 	if dto.KafkaEnabled && dto.KafkaTopic == "" {
 		return fmt.Errorf("kafkaTopic is required when Kafka export is enabled")
+	}
+	if dto.KafkaFlowTopK < 0 {
+		return fmt.Errorf("kafkaFlowTopK must be zero or positive, got %d", dto.KafkaFlowTopK)
 	}
 	return nil
 }
