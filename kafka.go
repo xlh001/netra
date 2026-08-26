@@ -22,17 +22,21 @@ const kafkaQueueMemoryBudget = 64 * 1024 * 1024
 
 const estimatedBytesPerFlow = 130
 
+const kafkaMaxMessageBytes = 900 * 1024
+
 type kafkaQueueItem struct {
 	snap     tickSnapshot
 	estBytes int64
 }
 
 type kafkaExporter struct {
-	mu          sync.RWMutex
-	writer      *kafkago.Writer
-	queueCh     chan kafkaQueueItem
-	closeCh     chan struct{}
-	queuedBytes int64
+	mu                sync.RWMutex
+	writer            *kafkago.Writer
+	queueCh           chan kafkaQueueItem
+	closeCh           chan struct{}
+	queuedBytes       int64
+	droppedTicksTotal int64
+	writeErrorsTotal  int64
 }
 
 type kafkaExportPayload struct {
@@ -161,6 +165,7 @@ func (exp *kafkaExporter) Publish(snap tickSnapshot) {
 	estBytes := int64(len(snap.kafkaFlows)) * estimatedBytesPerFlow
 	if atomic.AddInt64(&exp.queuedBytes, estBytes) > kafkaQueueMemoryBudget {
 		atomic.AddInt64(&exp.queuedBytes, -estBytes)
+		atomic.AddInt64(&exp.droppedTicksTotal, 1)
 		log.Printf("kafka: write queue over memory budget, dropping tick %s", snap.start.Format(time.RFC3339))
 		return
 	}
@@ -169,6 +174,7 @@ func (exp *kafkaExporter) Publish(snap tickSnapshot) {
 	case exp.queueCh <- kafkaQueueItem{snap: snap, estBytes: estBytes}:
 	default:
 		atomic.AddInt64(&exp.queuedBytes, -estBytes)
+		atomic.AddInt64(&exp.droppedTicksTotal, 1)
 		log.Printf("kafka: write queue full, dropping tick %s", snap.start.Format(time.RFC3339))
 	}
 }
@@ -193,21 +199,51 @@ func (exp *kafkaExporter) writeTick(snap tickSnapshot) {
 		return
 	}
 
-	payload := kafkaExportPayload{
-		Timestamp: snap.start,
-		Flows:     flowSamplesToStats(snap.kafkaFlows),
+	flows := flowSamplesToStats(snap.kafkaFlows)
+	chunkSize := kafkaMaxMessageBytes / estimatedBytesPerFlow
+
+	var msgs []kafkago.Message
+	if len(flows) == 0 {
+		body, err := json.Marshal(kafkaExportPayload{Timestamp: snap.start, Flows: flows})
+		if err != nil {
+			log.Printf("kafka: encode payload: %v", err)
+			return
+		}
+		msgs = append(msgs, kafkago.Message{Value: body})
+	} else {
+		for i := 0; i < len(flows); i += chunkSize {
+			end := i + chunkSize
+			if end > len(flows) {
+				end = len(flows)
+			}
+			body, err := json.Marshal(kafkaExportPayload{Timestamp: snap.start, Flows: flows[i:end]})
+			if err != nil {
+				log.Printf("kafka: encode payload: %v", err)
+				continue
+			}
+			msgs = append(msgs, kafkago.Message{Value: body})
+		}
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("kafka: encode payload: %v", err)
+	if len(msgs) == 0 {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := writer.WriteMessages(ctx, kafkago.Message{Value: body}); err != nil {
+	if err := writer.WriteMessages(ctx, msgs...); err != nil {
+		atomic.AddInt64(&exp.writeErrorsTotal, 1)
 		log.Printf("kafka: publish failed: %v", err)
 	}
+}
+
+func (exp *kafkaExporter) stats() (queuedBytes, droppedTicks, writeErrors int64) {
+	return atomic.LoadInt64(&exp.queuedBytes), atomic.LoadInt64(&exp.droppedTicksTotal), atomic.LoadInt64(&exp.writeErrorsTotal)
+}
+
+func (exp *kafkaExporter) enabled() bool {
+	exp.mu.RLock()
+	defer exp.mu.RUnlock()
+	return exp.writer != nil
 }
 
 func (exp *kafkaExporter) Close() {

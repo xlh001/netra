@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/platform-linux-blue" alt="Platform" />
 </p>
 
-<p align="center">One binary. Observe your network with eBPF. Ask AI. Extend with MCP</p>
+<p align="center">One binary. Lightweight, high-performance. Observe your network with eBPF. Ask AI. Extend with MCP</p>
 
 ## 介绍
 
@@ -20,6 +20,10 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 <img src="docs/dashboard.png" alt="Netra 实时大屏" width="100%" />
 
 https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
+
+除了业务流量，Netra 自身的运行状态（CPU/内存/数据库/Kafka 写入/镜像网卡链路等）也可以在系统监控页面实时查看
+
+<img src="docs/monitor.png" alt="Netra 系统监控" width="100%" />
 
 ## 整体架构
 
@@ -57,7 +61,7 @@ Netra 自己不产生流量，也不挂在业务转发路径上——它接的�
 - **持久化**：SQLite + DuckDB 混合存储——低频的配置/用户/告警等数据走 SQLite，高频的流量历史（IP/端口/域名/五元组）走 DuckDB，按时间片滚动存为 Parquet 文件。
 - **AI 助手**：可接入任意 OpenAI 协议兼容模型，基于真实历史数据回答问题。
 - **MCP 扩展**：可接入外部 MCP Server，AI 助手对话时可按需调用其提供的工具，支持 HTTP/stdio 两种传输方式及 Basic/Bearer 认证。
-- **Kafka**：如果不想用 Netra 自带的 Dashboard 看数据，可以启用这个功能——会把流量明细异步推送到 Kafka，自由对接下游系统消费使用。
+- **Kafka**：如果想用 Grafana 等工具自己做可视化，而不是用 Netra 自带的 Dashboard，可以启用这个功能——流量明细会异步推送到 Kafka，自由对接下游系统消费使用。
 
 ## 部署
 
@@ -100,7 +104,7 @@ GeoIP 的两个 `.mmdb` 文件 需自行获取，[MaxMind 官网](https://www.ma
 
    ```ini
    [Unit]
-   Description=One binary. Observe your network with eBPF. Ask AI. Extend with MCP.
+   Description=One binary. Lightweight, high-performance. Observe your network with eBPF. Ask AI. Extend with MCP.
    After=network.target
 
    [Service]

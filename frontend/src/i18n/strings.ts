@@ -136,6 +136,16 @@ export const STRINGS = {
   monitorDBConns: '连接数(使用中 / 总数)', monitorDBWaitCount: '等待连接次数',
   monitorDBDisabled: '未启用持久化（启动时未指定 -db 参数）',
   monitorCapture: '采集健康', monitorReadFailures: '近1小时内跳过的采集次数',
+  monitorReadFailuresHint:
+    '读取内核里的流量统计数据时，如果刚好碰上内核也在同时更新这份数据，可能会读取失败；重试3次仍然失败，才会计一次"跳过"。这只会让当前这一轮的展示数据缺失，不影响内核实际抓包和统计，下一轮会自动恢复。',
+  monitorKafka: 'Kafka 写入', monitorKafkaQueueBytes: '队列占用', monitorKafkaDropped: '累计丢弃 tick 数',
+  monitorKafkaWriteErrors: '累计写入失败次数',
+  monitorKafkaDisabled: 'Kafka未启用 （可在系统设置 → Kafka 中开启）',
+  monitorIfaces: '镜像网卡',
+  monitorIfaceModeNative: 'XDP 原生模式', monitorIfaceModeGeneric: 'XDP 通用模式',
+  monitorIfaceUp: '链路正常', monitorIfaceDown: '链路断开',
+  monitorIfacePromiscByNetra: 'Netra已开启混杂模式',
+  monitorIfaceRx: '接收速率',
 
   aiPageTitle: 'AI 助手', aiWidgetClose: '收起',
   aiWidgetTooltip: 'Netra AI 助手',

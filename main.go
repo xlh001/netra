@@ -94,11 +94,13 @@ func main() {
 		log.Fatal("usage: netra -iface <ifname>[,<ifname>...] [-web-addr <addr>]")
 	}
 
+	var ifaceConfigs []ifaceConfig
 	for _, iface := range ifaces {
 		alreadyPromisc, err := setPromiscuous(iface.Name)
 		if err != nil {
 			log.Fatalf("enable promiscuous mode on %s: %v", iface.Name, err)
 		}
+		ifaceConfigs = append(ifaceConfigs, ifaceConfig{name: iface.Name, promiscByNetra: !alreadyPromisc})
 		if alreadyPromisc {
 			log.Printf("%s is already in promiscuous mode, leaving it as-is", iface.Name)
 		} else {
@@ -225,7 +227,7 @@ func main() {
 			log.Printf("created initial admin account -- username: %s  password: %s  (shown once, log in and change it)", result.AdminUsername, result.AdminPassword)
 			log.Printf("created dashboard account (long-lived session, for screen-casting) -- username: %s  password: %s  (shown once)", result.DashboardUsername, result.DashboardPassword)
 		}
-		mon := newMonitor(*dbPath, store)
+		mon := newMonitor(*dbPath, store, ifaceConfigs, *generic)
 		go mon.run()
 		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, mcpMgr)
 	}

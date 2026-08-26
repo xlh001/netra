@@ -3,6 +3,7 @@ package main
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,6 +65,10 @@ type aggregator struct {
 	anomalyAvgPacketsThreshold float64
 
 	volumeThresholdBytes uint64
+
+	scanAlertsTotal   int64
+	ddosAlertsTotal   int64
+	volumeAlertsTotal int64
 
 	topKPerBucket int
 	dbFlowTopK    int
@@ -267,6 +272,7 @@ func (a *aggregator) threatAlertsLocked() []ThreatAlert {
 			continue
 		}
 		peerAlerts = append(peerAlerts, ThreatAlert{Kind: AlertKindScan, IP: ipString(src), DistinctPeers: len(dests)})
+		atomic.AddInt64(&a.scanAlertsTotal, 1)
 	}
 	for dst, srcs := range a.ddosSrcs {
 		if len(srcs) < a.anomalyPeerThreshold {
@@ -281,6 +287,7 @@ func (a *aggregator) threatAlertsLocked() []ThreatAlert {
 			continue
 		}
 		peerAlerts = append(peerAlerts, ThreatAlert{Kind: AlertKindDDoS, IP: ipString(dst), DistinctPeers: len(srcs)})
+		atomic.AddInt64(&a.ddosAlertsTotal, 1)
 	}
 	sort.Slice(peerAlerts, func(i, j int) bool { return peerAlerts[i].DistinctPeers > peerAlerts[j].DistinctPeers })
 
@@ -294,10 +301,24 @@ func (a *aggregator) threatAlertsLocked() []ThreatAlert {
 			continue
 		}
 		volumeAlerts = append(volumeAlerts, ThreatAlert{Kind: AlertKindVolume, IP: ipString(ip), VolumeBytes: totalBytes})
+		atomic.AddInt64(&a.volumeAlertsTotal, 1)
 	}
 	sort.Slice(volumeAlerts, func(i, j int) bool { return volumeAlerts[i].VolumeBytes > volumeAlerts[j].VolumeBytes })
 
 	return append(peerAlerts, volumeAlerts...)
+}
+
+func (a *aggregator) alertTotals() (scan, ddos, volume int64) {
+	return atomic.LoadInt64(&a.scanAlertsTotal), atomic.LoadInt64(&a.ddosAlertsTotal), atomic.LoadInt64(&a.volumeAlertsTotal)
+}
+
+func (a *aggregator) activeFlowCount() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.buckets) == 0 {
+		return 0
+	}
+	return a.buckets[len(a.buckets)-1].distinctFlowCount
 }
 
 func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlowStats) tickSnapshot {

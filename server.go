@@ -983,7 +983,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 
 	mux.Handle("GET /api/admin/monitor", adminOnly(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(mon.snapshot(agg))
+		json.NewEncoder(w).Encode(mon.snapshot(agg, kafkaExp, mcpMgr))
 	}))
 
 	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {

@@ -45,6 +45,18 @@ func newMCPManager() *mcpManager {
 	return &mcpManager{records: map[int]MCPServerRecord{}, conns: map[int]*mcpConnection{}, status: map[int]mcpConnStatus{}}
 }
 
+func (m *mcpManager) connectedCounts() (connected, total int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	total = len(m.records)
+	for _, st := range m.status {
+		if st.Connected {
+			connected++
+		}
+	}
+	return connected, total
+}
+
 // authRoundTripper injects a static Authorization header into every outgoing
 // request, used to apply an MCP server's configured Basic/Bearer credentials.
 type authRoundTripper struct {

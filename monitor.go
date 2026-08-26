@@ -12,6 +12,22 @@ import (
 	"time"
 )
 
+type ifaceConfig struct {
+	name           string
+	promiscByNetra bool
+}
+
+type ifaceCounterSample struct {
+	rxPackets uint64
+	rxBytes   uint64
+	at        time.Time
+}
+
+type ifaceRate struct {
+	rxPPS float64
+	rxBPS float64
+}
+
 type monitor struct {
 	mu           sync.Mutex
 	lastCPU      cpuSample
@@ -20,10 +36,16 @@ type monitor struct {
 	processStart time.Time
 	dbPath       string
 	store        *Store
+
+	ifaces      []ifaceConfig
+	genericMode bool
+
+	lastIfaceSamples map[string]ifaceCounterSample
+	ifaceRates       map[string]ifaceRate
 }
 
-func newMonitor(dbPath string, store *Store) *monitor {
-	m := &monitor{processStart: time.Now(), dbPath: dbPath, store: store}
+func newMonitor(dbPath string, store *Store, ifaces []ifaceConfig, genericMode bool) *monitor {
+	m := &monitor{processStart: time.Now(), dbPath: dbPath, store: store, ifaces: ifaces, genericMode: genericMode}
 	if s, err := readCPUSample(); err == nil {
 		m.lastCPU = s
 		m.haveLastCPU = true
@@ -36,16 +58,45 @@ func (m *monitor) run() {
 	defer ticker.Stop()
 	for range ticker.C {
 		cur, err := readCPUSample()
+		if err == nil {
+			m.mu.Lock()
+			if m.haveLastCPU {
+				m.cpuPercent = cpuPercentBetween(m.lastCPU, cur)
+			}
+			m.lastCPU = cur
+			m.haveLastCPU = true
+			m.mu.Unlock()
+		}
+		m.sampleIfaceCounters()
+	}
+}
+
+func (m *monitor) sampleIfaceCounters() {
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ifc := range m.ifaces {
+		rxPackets, rxBytes, err := readIfaceCounters(ifc.name)
 		if err != nil {
 			continue
 		}
-		m.mu.Lock()
-		if m.haveLastCPU {
-			m.cpuPercent = cpuPercentBetween(m.lastCPU, cur)
+		cur := ifaceCounterSample{rxPackets: rxPackets, rxBytes: rxBytes, at: now}
+		if prev, ok := m.lastIfaceSamples[ifc.name]; ok && cur.rxPackets >= prev.rxPackets && cur.rxBytes >= prev.rxBytes {
+			dt := cur.at.Sub(prev.at).Seconds()
+			if dt > 0 {
+				if m.ifaceRates == nil {
+					m.ifaceRates = map[string]ifaceRate{}
+				}
+				m.ifaceRates[ifc.name] = ifaceRate{
+					rxPPS: float64(cur.rxPackets-prev.rxPackets) / dt,
+					rxBPS: float64(cur.rxBytes-prev.rxBytes) * 8 / dt,
+				}
+			}
 		}
-		m.lastCPU = cur
-		m.haveLastCPU = true
-		m.mu.Unlock()
+		if m.lastIfaceSamples == nil {
+			m.lastIfaceSamples = map[string]ifaceCounterSample{}
+		}
+		m.lastIfaceSamples[ifc.name] = cur
 	}
 }
 
@@ -157,6 +208,52 @@ func readDiskUsage(path string) (totalBytes, usedBytes uint64, err error) {
 	return total, total - free, nil
 }
 
+func readSysfsUint64(path string) (uint64, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+}
+
+func readIfaceCounters(name string) (rxPackets, rxBytes uint64, err error) {
+	rxPackets, err = readSysfsUint64(fmt.Sprintf("/sys/class/net/%s/statistics/rx_packets", name))
+	if err != nil {
+		return 0, 0, err
+	}
+	rxBytes, err = readSysfsUint64(fmt.Sprintf("/sys/class/net/%s/statistics/rx_bytes", name))
+	if err != nil {
+		return 0, 0, err
+	}
+	return rxPackets, rxBytes, nil
+}
+
+func readIfaceCarrier(name string) bool {
+	v, err := readSysfsUint64(fmt.Sprintf("/sys/class/net/%s/carrier", name))
+	return err == nil && v == 1
+}
+
+func readIfaceSpeedMbps(name string) int64 {
+	b, err := os.ReadFile(fmt.Sprintf("/sys/class/net/%s/speed", name))
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+type IfaceStatus struct {
+	Name                  string  `json:"name"`
+	PromiscEnabledByNetra bool    `json:"promiscEnabledByNetra"`
+	CarrierUp             bool    `json:"carrierUp"`
+	SpeedMbps             int64   `json:"speedMbps,omitempty"`
+	RxPPS                 float64 `json:"rxPPS"`
+	RxBPS                 float64 `json:"rxBPS"`
+}
+
 type MonitorSnapshot struct {
 	NumCPU          int     `json:"numCPU"`
 	CPUPercent      float64 `json:"cpuPercent"`
@@ -186,11 +283,30 @@ type MonitorSnapshot struct {
 	DBWaitCount        int64 `json:"dbWaitCount,omitempty"`
 
 	ReadFailuresRecent int `json:"readFailuresRecent"`
+	ActiveFlows        int `json:"activeFlows"`
+
+	KafkaEnabled           bool  `json:"kafkaEnabled"`
+	KafkaQueueBytes        int64 `json:"kafkaQueueBytes"`
+	KafkaDroppedTicksTotal int64 `json:"kafkaDroppedTicksTotal"`
+	KafkaWriteErrorsTotal  int64 `json:"kafkaWriteErrorsTotal"`
+
+	ThreatAlertsScanTotal   int64 `json:"threatAlertsScanTotal"`
+	ThreatAlertsDDoSTotal   int64 `json:"threatAlertsDdosTotal"`
+	ThreatAlertsVolumeTotal int64 `json:"threatAlertsVolumeTotal"`
+
+	MCPServersConnected int `json:"mcpServersConnected"`
+	MCPServersTotal     int `json:"mcpServersTotal"`
+
+	XDPGenericMode bool          `json:"xdpGenericMode"`
+	Ifaces         []IfaceStatus `json:"ifaces"`
 }
 
-func (m *monitor) snapshot(agg *aggregator) MonitorSnapshot {
+func (m *monitor) snapshot(agg *aggregator, kafkaExp *kafkaExporter, mcpMgr *mcpManager) MonitorSnapshot {
 	m.mu.Lock()
 	cpuPercent := m.cpuPercent
+	ifaces := m.ifaces
+	rates := m.ifaceRates
+	genericMode := m.genericMode
 	m.mu.Unlock()
 
 	s := MonitorSnapshot{
@@ -199,6 +315,28 @@ func (m *monitor) snapshot(agg *aggregator) MonitorSnapshot {
 		Goroutines:         runtime.NumGoroutine(),
 		ProcessUptimeSec:   int64(time.Since(m.processStart).Seconds()),
 		ReadFailuresRecent: agg.recentReadFailures(),
+		ActiveFlows:        agg.activeFlowCount(),
+	}
+
+	s.ThreatAlertsScanTotal, s.ThreatAlertsDDoSTotal, s.ThreatAlertsVolumeTotal = agg.alertTotals()
+	s.KafkaEnabled = kafkaExp.enabled()
+	s.KafkaQueueBytes, s.KafkaDroppedTicksTotal, s.KafkaWriteErrorsTotal = kafkaExp.stats()
+	s.MCPServersConnected, s.MCPServersTotal = mcpMgr.connectedCounts()
+
+	s.XDPGenericMode = genericMode
+	s.Ifaces = make([]IfaceStatus, 0, len(ifaces))
+	for _, ifc := range ifaces {
+		st := IfaceStatus{
+			Name:                  ifc.name,
+			PromiscEnabledByNetra: ifc.promiscByNetra,
+			CarrierUp:             readIfaceCarrier(ifc.name),
+			SpeedMbps:             readIfaceSpeedMbps(ifc.name),
+		}
+		if rate, ok := rates[ifc.name]; ok {
+			st.RxPPS = rate.rxPPS
+			st.RxBPS = rate.rxBPS
+		}
+		s.Ifaces = append(s.Ifaces, st)
 	}
 
 	if load1, load5, load15, err := readLoadAvg(); err == nil {

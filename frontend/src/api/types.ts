@@ -337,6 +337,31 @@ export interface MonitorSnapshot {
   dbWaitCount?: number
 
   readFailuresRecent: number
+  activeFlows: number
+
+  kafkaEnabled: boolean
+  kafkaQueueBytes: number
+  kafkaDroppedTicksTotal: number
+  kafkaWriteErrorsTotal: number
+
+  threatAlertsScanTotal: number
+  threatAlertsDdosTotal: number
+  threatAlertsVolumeTotal: number
+
+  mcpServersConnected: number
+  mcpServersTotal: number
+
+  xdpGenericMode: boolean
+  ifaces: IfaceStatus[]
+}
+
+export interface IfaceStatus {
+  name: string
+  promiscEnabledByNetra: boolean
+  carrierUp: boolean
+  speedMbps?: number
+  rxPPS: number
+  rxBPS: number
 }
 
 export interface UserRecord {
