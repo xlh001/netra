@@ -36,41 +36,44 @@ func TestKafkaExporterConsumeReal(t *testing.T) {
 		t.Fatalf("read message: %v", err)
 	}
 
-	var raw map[string]json.RawMessage
+	var raw []map[string]json.RawMessage
 	if err := json.Unmarshal(msg.Value, &raw); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if _, ok := raw["protoPackets"]; ok {
+	if len(raw) == 0 {
+		t.Fatalf("payload is an empty array")
+	}
+	if _, ok := raw[0]["protoPackets"]; ok {
 		t.Errorf("payload still contains protoPackets, expected it to be dropped")
 	}
-	if _, ok := raw["protoBytes"]; ok {
+	if _, ok := raw[0]["protoBytes"]; ok {
 		t.Errorf("payload still contains protoBytes, expected it to be dropped")
 	}
-	if _, ok := raw["timestamp"]; !ok {
-		t.Errorf("payload missing timestamp field")
-	}
-	if _, ok := raw["flows"]; !ok {
-		t.Errorf("payload missing flows field")
+	if _, ok := raw[0]["timestamp"]; !ok {
+		t.Errorf("record missing its own timestamp field")
 	}
 
-	var payload kafkaExportPayload
-	if err := json.Unmarshal(msg.Value, &payload); err != nil {
-		t.Fatalf("unmarshal into kafkaExportPayload: %v", err)
+	var records []kafkaFlowRecord
+	if err := json.Unmarshal(msg.Value, &records); err != nil {
+		t.Fatalf("unmarshal into []kafkaFlowRecord: %v", err)
 	}
 
-	t.Logf("consumed real tick from %s: timestamp=%s, %d flow(s)", topic, payload.Timestamp, len(payload.Flows))
-	for i, f := range payload.Flows {
-		if net.ParseIP(f.SrcIP) == nil {
-			t.Errorf("flow[%d]: invalid srcIP %q", i, f.SrcIP)
+	t.Logf("consumed real tick from %s: %d record(s)", topic, len(records))
+	for i, r := range records {
+		if r.Timestamp.IsZero() {
+			t.Errorf("record[%d]: zero timestamp", i)
 		}
-		if net.ParseIP(f.DstIP) == nil {
-			t.Errorf("flow[%d]: invalid dstIP %q", i, f.DstIP)
+		if net.ParseIP(r.SrcIP) == nil {
+			t.Errorf("record[%d]: invalid srcIP %q", i, r.SrcIP)
 		}
-		if f.Proto == "" {
-			t.Errorf("flow[%d]: empty proto", i)
+		if net.ParseIP(r.DstIP) == nil {
+			t.Errorf("record[%d]: invalid dstIP %q", i, r.DstIP)
 		}
-		if f.Packets == 0 && f.Bytes == 0 {
-			t.Errorf("flow[%d]: both packets and bytes are zero", i)
+		if r.Proto == "" {
+			t.Errorf("record[%d]: empty proto", i)
+		}
+		if r.Packets == 0 && r.Bytes == 0 {
+			t.Errorf("record[%d]: both packets and bytes are zero", i)
 		}
 	}
 }

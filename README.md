@@ -21,10 +21,6 @@ Netra 是一个旁路部署在镜像网卡的流量可视化平台，不侵入�
 
 https://github.com/user-attachments/assets/7be16b4e-27a3-46bc-b485-7bfea1c40b95
 
-除了业务流量，Netra 自身的运行状态（CPU/内存/数据库/Kafka 写入/镜像网卡链路等）也可以在系统监控页面实时查看
-
-<img src="docs/monitor.png" alt="Netra 系统监控" width="100%" />
-
 ## 整体架构
 
 Netra 自己不产生流量，也不挂在业务转发路径上——它接的是交换机 SPAN 镜像口复制出来的一份只读副本：
@@ -56,12 +52,51 @@ Netra 自己不产生流量，也不挂在业务转发路径上——它接的�
 - **实时大屏**：总流量、协议占比、流量趋势、Top IP/端口/域名排名、目标国家分布、世界地图、内网拓扑图。
 - **流量详情**：按流量、IP、端口、域名、服务分类等多维度数据。
 - **威胁感知**：扫描/DDoS/单 IP 大流量三类启发式检测，命中可推送到企业微信/钉钉/飞书，启用 AI 后附带自然语言解读。
-- **域名识别**：被动解析 TLS SNI。
+- **域名识别**：被动解析 TLS SNI，不依赖端口，跑在非 443 端口上的 HTTPS 服务也能识别出域名。
+- **服务识别**：五元组流量默认按内置的 IANA 官方端口对照表识别服务；TLS/SSH/FTP/SMTP/POP3/IMAP/MySQL/PostgreSQL/MongoDB/Redis/RDP/VNC/AMQP/gRPC 这几类协议额外做了基于内容特征的识别（DPI），不依赖端口号，能认出跑在非标准端口上的服务，命中会标注 DPI。
 - **GeoIP 富化**：接入 MaxMind GeoLite2，标注公网 IP 的国家与归属组织。
 - **持久化**：SQLite + DuckDB 混合存储——低频的配置/用户/告警等数据走 SQLite，高频的流量历史（IP/端口/域名/五元组）走 DuckDB，按时间片滚动存为 Parquet 文件。
 - **AI 助手**：可接入任意 OpenAI 协议兼容模型，基于真实历史数据回答问题。
 - **MCP 扩展**：可接入外部 MCP Server，AI 助手对话时可按需调用其提供的工具，支持 HTTP/stdio 两种传输方式及 Basic/Bearer 认证。
 - **Kafka**：如果想用 Grafana 等工具自己做可视化，而不是用 Netra 自带的 Dashboard，可以启用这个功能——流量明细会异步推送到 Kafka，自由对接下游系统消费使用。
+
+  <details>
+  <summary>推送到Kafka数据结构示例</summary>
+
+  ```json
+  {
+    "timestamp": "2026-08-27T15:04:05.123456+08:00",
+    "srcIP": "10.20.1.15",
+    "srcPort": 51422,
+    "srcLabel": "OA",
+    "dstIP": "203.0.113.10",
+    "dstPort": 9200,
+    "proto": "tcp",
+    "service": "elasticsearch",
+    "packets": 12,
+    "bytes": 3400
+  }
+  ```
+
+  ```json
+  {
+    "timestamp": "2026-08-27T15:04:05.123456+08:00",
+    "srcIP": "10.20.1.16",
+    "srcPort": 60078,
+    "srcLabel": "EHR",
+    "dstIP": "203.0.113.20",
+    "dstPort": 8443,
+    "dstCountry": "US",
+    "proto": "tcp",
+    "service": "https",
+    "dpi": true,
+    "domain": "example.com",
+    "packets": 42,
+    "bytes": 5210
+  }
+  ```
+
+  </details>
 
 ## 部署
 

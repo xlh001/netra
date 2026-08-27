@@ -119,6 +119,16 @@ func serviceName(port uint16) string {
 	return ianaPortNames[port]
 }
 
+// resolveService prefers a DPI content match over the port table -- DPI
+// looked at what's actually on the wire, so it's trusted over guessing from
+// the port number alone.
+func resolveService(dport uint16, dpiService string) (service string, dpi bool) {
+	if dpiService != "" {
+		return dpiService, true
+	}
+	return serviceName(dport), false
+}
+
 var serviceCategories = map[string]string{
 	"http": "Web", "https": "Web", "http-alt": "Web", "https-alt": "Web", "http-proxy": "Web", "http-rpc": "Web", "ajp": "Web", "squid": "Web", "php-fpm": "Web",
 

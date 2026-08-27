@@ -50,14 +50,15 @@ type volumeSample struct {
 }
 
 type aggregator struct {
-	mu           sync.RWMutex
-	buckets      []bucket
-	domainByFlow map[xdpflowFlowKey]domainEntry
-	readFailures []time.Time
-	interval     time.Duration
-	scanDests    map[uint32]map[uint32]scanDestEntry
-	ddosSrcs     map[uint32]map[uint32]scanDestEntry
-	volumeTotals map[uint32][]volumeSample
+	mu               sync.RWMutex
+	buckets          []bucket
+	domainByFlow     map[xdpflowFlowKey]domainEntry
+	dpiServiceByFlow map[xdpflowFlowKey]dpiServiceEntry
+	readFailures     []time.Time
+	interval         time.Duration
+	scanDests        map[uint32]map[uint32]scanDestEntry
+	ddosSrcs         map[uint32]map[uint32]scanDestEntry
+	volumeTotals     map[uint32][]volumeSample
 
 	anomalyEnabled             bool
 	anomalyWindow              time.Duration
@@ -98,9 +99,15 @@ type domainEntry struct {
 	seenAt   time.Time
 }
 
+type dpiServiceEntry struct {
+	service string
+	seenAt  time.Time
+}
+
 func newAggregator(interval time.Duration) *aggregator {
 	return &aggregator{
 		domainByFlow:               map[xdpflowFlowKey]domainEntry{},
+		dpiServiceByFlow:           map[xdpflowFlowKey]dpiServiceEntry{},
 		interval:                   interval,
 		scanDests:                  map[uint32]map[uint32]scanDestEntry{},
 		ddosSrcs:                   map[uint32]map[uint32]scanDestEntry{},
@@ -149,6 +156,20 @@ func (a *aggregator) cleanupDomainsLocked(cutoff time.Time) {
 	for k, e := range a.domainByFlow {
 		if e.seenAt.Before(cutoff) {
 			delete(a.domainByFlow, k)
+		}
+	}
+}
+
+func (a *aggregator) recordDPIService(key xdpflowFlowKey, service string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dpiServiceByFlow[key] = dpiServiceEntry{service: service, seenAt: time.Now()}
+}
+
+func (a *aggregator) cleanupDPIServicesLocked(cutoff time.Time) {
+	for k, e := range a.dpiServiceByFlow {
+		if e.seenAt.Before(cutoff) {
+			delete(a.dpiServiceByFlow, k)
 		}
 	}
 }
@@ -406,11 +427,11 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 
 	dbFlowSamples := make([]flowSample, len(dbFlows))
 	for i, f := range dbFlows {
-		dbFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname}
+		dbFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname, dpiService: a.dpiServiceByFlow[f.key].service}
 	}
 	kafkaFlowSamples := make([]flowSample, len(kafkaFlowsRaw))
 	for i, f := range kafkaFlowsRaw {
-		kafkaFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname}
+		kafkaFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname, dpiService: a.dpiServiceByFlow[f.key].service}
 	}
 
 	a.buckets = append(a.buckets, b)
@@ -423,6 +444,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		a.buckets = a.buckets[i:]
 	}
 	a.cleanupDomainsLocked(cutoff)
+	a.cleanupDPIServicesLocked(cutoff)
 
 	return tickSnapshot{
 		start:             now,
@@ -523,6 +545,7 @@ type FlowStat struct {
 	DstCountry string `json:"dstCountry,omitempty"`
 	Proto      string `json:"proto"`
 	Service    string `json:"service,omitempty"`
+	DPI        bool   `json:"dpi,omitempty"`
 	Domain     string `json:"domain,omitempty"`
 	Packets    uint64 `json:"packets"`
 	Bytes      uint64 `json:"bytes"`

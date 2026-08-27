@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/oschwald/geoip2-golang"
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/segmentio/kafka-go/sasl/plain"
 )
@@ -37,17 +38,22 @@ type kafkaExporter struct {
 	queuedBytes       int64
 	droppedTicksTotal int64
 	writeErrorsTotal  int64
+
+	geoDB  *geoip2.Reader
+	ipTags *ipTagCache
 }
 
-type kafkaExportPayload struct {
-	Timestamp time.Time  `json:"timestamp"`
-	Flows     []FlowStat `json:"flows"`
+type kafkaFlowRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	FlowStat
 }
 
-func newKafkaExporter() *kafkaExporter {
+func newKafkaExporter(geoDB *geoip2.Reader, ipTags *ipTagCache) *kafkaExporter {
 	exp := &kafkaExporter{
 		queueCh: make(chan kafkaQueueItem, kafkaWriteQueueSlots),
 		closeCh: make(chan struct{}),
+		geoDB:   geoDB,
+		ipTags:  ipTags,
 	}
 	go exp.writeLoop()
 	return exp
@@ -200,23 +206,29 @@ func (exp *kafkaExporter) writeTick(snap tickSnapshot) {
 	}
 
 	flows := flowSamplesToStats(snap.kafkaFlows)
+	annotateCountriesFlows(exp.geoDB, flows)
+	annotateIPTagsFlows(exp.ipTags, flows)
+	records := make([]kafkaFlowRecord, len(flows))
+	for i, f := range flows {
+		records[i] = kafkaFlowRecord{Timestamp: snap.start, FlowStat: f}
+	}
 	chunkSize := kafkaMaxMessageBytes / estimatedBytesPerFlow
 
 	var msgs []kafkago.Message
-	if len(flows) == 0 {
-		body, err := json.Marshal(kafkaExportPayload{Timestamp: snap.start, Flows: flows})
+	if len(records) == 0 {
+		body, err := json.Marshal(records)
 		if err != nil {
 			log.Printf("kafka: encode payload: %v", err)
 			return
 		}
 		msgs = append(msgs, kafkago.Message{Value: body})
 	} else {
-		for i := 0; i < len(flows); i += chunkSize {
+		for i := 0; i < len(records); i += chunkSize {
 			end := i + chunkSize
-			if end > len(flows) {
-				end = len(flows)
+			if end > len(records) {
+				end = len(records)
 			}
-			body, err := json.Marshal(kafkaExportPayload{Timestamp: snap.start, Flows: flows[i:end]})
+			body, err := json.Marshal(records[i:end])
 			if err != nil {
 				log.Printf("kafka: encode payload: %v", err)
 				continue
@@ -259,10 +271,11 @@ func (exp *kafkaExporter) Close() {
 func flowSamplesToStats(samples []flowSample) []FlowStat {
 	out := make([]FlowStat, 0, len(samples))
 	for _, s := range samples {
+		service, dpi := resolveService(s.key.Dport, s.dpiService)
 		out = append(out, FlowStat{
 			SrcIP: ipString(s.key.Saddr), SrcPort: s.key.Sport,
 			DstIP: ipString(s.key.Daddr), DstPort: s.key.Dport,
-			Proto: protoName(s.key.Proto), Service: serviceName(s.key.Dport),
+			Proto: protoName(s.key.Proto), Service: service, DPI: dpi,
 			Domain:  s.domain,
 			Packets: s.packets, Bytes: s.bytes,
 		})

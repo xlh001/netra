@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../i18n/context'
-import { formatBps, formatBytes, protoColor, serviceColor, windowToSeconds } from '../../lib/format'
+import { formatBps, formatBytes, protoColor, windowToSeconds } from '../../lib/format'
 import { pagesFor, ROTATE_MS } from '../../lib/pagination'
-import { AssetLabel, DomainBadge } from '../../lib/trafficColumns'
+import { AssetLabel, DomainBadge, ServiceBadge } from '../../lib/trafficColumns'
 import type { FlowStat, Report } from '../../api/types'
 
 const PAGE_SIZE_CEILING = 10
@@ -89,7 +89,6 @@ export function FlowsTable({ report }: { report: Report | null }) {
 }
 
 export function FlowRow({ f, windowSeconds }: { f: FlowStat; windowSeconds: number }) {
-  const sc = f.service ? serviceColor(f.service) : null
   const avgBps = (f.bytes * 8) / windowSeconds
 
   return (
@@ -107,15 +106,7 @@ export function FlowRow({ f, windowSeconds }: { f: FlowStat; windowSeconds: numb
       <td className="proto-cell" style={{ ['--dot' as string]: protoColor(f.proto) }}>
         {f.proto.toUpperCase()}
       </td>
-      <td className="svc" title={f.service || ''}>
-        {f.service ? (
-          <span className="svc-badge" style={sc ? { color: sc.fg, background: sc.bg, borderColor: sc.bd } : undefined}>
-            {f.service}
-          </span>
-        ) : (
-          '--'
-        )}
-      </td>
+      <td className="svc">{f.service ? <ServiceBadge svc={f.service} dpi={f.dpi} /> : '--'}</td>
       <td className="domain-cell">{f.domain ? <DomainBadge domain={f.domain} /> : '--'}</td>
       <td className="num">{f.packets.toLocaleString()}</td>
       <td className="num" title={`${formatBytes(f.bytes)}, avg ${formatBps(avgBps)} over the selected window`}>

@@ -16,6 +16,7 @@ export interface FlowStat {
   dstCountry?: string
   proto: string
   service?: string
+  dpi?: boolean
   domain?: string
   packets: number
   bytes: number
@@ -342,6 +343,7 @@ export interface MonitorSnapshot {
 
   xdpGenericMode: boolean
   ifaces: IfaceStatus[]
+
 }
 
 export interface IfaceStatus {

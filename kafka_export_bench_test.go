@@ -30,6 +30,14 @@ func genSyntheticFlows(n int) []flowSample {
 
 var benchFlowCounts = []int{2000, 10000, 50000, 100000}
 
+func flowsToRecords(flows []FlowStat, ts time.Time) []kafkaFlowRecord {
+	records := make([]kafkaFlowRecord, len(flows))
+	for i, f := range flows {
+		records[i] = kafkaFlowRecord{Timestamp: ts, FlowStat: f}
+	}
+	return records
+}
+
 func BenchmarkKafkaExportFull(b *testing.B) {
 	for _, n := range benchFlowCounts {
 		samples := genSyntheticFlows(n)
@@ -37,11 +45,8 @@ func BenchmarkKafkaExportFull(b *testing.B) {
 			b.ReportAllocs()
 			var lastLen int
 			for i := 0; i < b.N; i++ {
-				payload := kafkaExportPayload{
-					Timestamp: time.Now(),
-					Flows:     flowSamplesToStats(samples),
-				}
-				body, err := json.Marshal(payload)
+				records := flowsToRecords(flowSamplesToStats(samples), time.Now())
+				body, err := json.Marshal(records)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -66,15 +71,11 @@ func BenchmarkKafkaExportConvertOnly(b *testing.B) {
 
 func BenchmarkKafkaExportMarshalOnly(b *testing.B) {
 	for _, n := range benchFlowCounts {
-		flows := flowSamplesToStats(genSyntheticFlows(n))
-		payload := kafkaExportPayload{
-			Timestamp: time.Now(),
-			Flows:     flows,
-		}
+		records := flowsToRecords(flowSamplesToStats(genSyntheticFlows(n)), time.Now())
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				if _, err := json.Marshal(payload); err != nil {
+				if _, err := json.Marshal(records); err != nil {
 					b.Fatal(err)
 				}
 			}

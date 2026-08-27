@@ -154,6 +154,12 @@ func main() {
 	}
 	defer httpReader.Close()
 
+	dpiReader, err := startDPIReader(objs.DpiEvents, agg.recordDPIService)
+	if err != nil {
+		log.Fatalf("start dpi reader: %v", err)
+	}
+	defer dpiReader.Close()
+
 	geoDB, err := loadGeoDB(*geoipDB)
 	if err != nil {
 		log.Printf("geoip: could not open %q, world map will be disabled: %v", *geoipDB, err)
@@ -190,11 +196,12 @@ func main() {
 	applyAnomalyConfig(agg, cfg)
 	applyCapacityConfig(agg, cfg)
 
-	kafkaExp := newKafkaExporter()
+	ipTags := newIPTagCache()
+
+	kafkaExp := newKafkaExporter(geoDB, ipTags)
 	defer kafkaExp.Close()
 	applyKafkaConfig(kafkaExp, cfg)
 
-	ipTags := newIPTagCache()
 	mcpMgr := newMCPManager()
 	defer mcpMgr.closeAll()
 	if store != nil {

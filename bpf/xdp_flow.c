@@ -19,9 +19,13 @@ struct flow_key {
 
 };
 
+#define DPI_MAX_CAPTURES_PER_FLOW 3
+
 struct flow_stats {
 	__u64 packets;
 	__u64 bytes;
+	__u8 dpi_capture_count;
+	__u8 pad[7];
 };
 
 struct {
@@ -30,6 +34,24 @@ struct {
 	__type(value, struct flow_stats);
 	__uint(max_entries, 1048576);
 } flow_stats_map SEC(".maps");
+
+#define DPI_CAPTURE_LEN 256
+
+struct dpi_event {
+	__u32 saddr;
+	__u32 daddr;
+	__u16 sport;
+	__u16 dport;
+	__u8 proto;
+	__u8 pad[3];
+	__u32 payload_len;
+	__u8 payload[DPI_CAPTURE_LEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1 << 23);
+} dpi_events SEC(".maps");
 
 #define SNI_CAPTURE_LEN 512
 
@@ -107,7 +129,7 @@ static __always_inline int parse_flow(void *data, void *data_end, struct flow_ke
 
 static __always_inline void maybe_capture_tls_clienthello(struct xdp_md *ctx, void *data, void *data_end, const struct flow_key *key)
 {
-	if (key->proto != IPPROTO_TCP || key->dport != bpf_htons(443))
+	if (key->proto != IPPROTO_TCP)
 		return;
 
 	struct ethhdr *eth = data;
@@ -245,6 +267,75 @@ static __always_inline void maybe_capture_http_host(struct xdp_md *ctx, void *da
 	bpf_ringbuf_submit(ev, 0);
 }
 
+static __always_inline int maybe_capture_dpi_payload(struct xdp_md *ctx, void *data, void *data_end, const struct flow_key *key)
+{
+	struct ethhdr *eth = data;
+	struct iphdr *ip = (void *)(eth + 1);
+	if ((void *)(ip + 1) > data_end)
+		return 0;
+
+	void *l4 = (void *)ip + (ip->ihl * 4);
+	void *payload;
+
+	if (key->proto == IPPROTO_TCP) {
+		struct tcphdr *tcp = l4;
+		if ((void *)(tcp + 1) > data_end)
+			return 0;
+		if (tcp->doff < 5)
+			return 0;
+		payload = (void *)tcp + (tcp->doff * 4);
+	} else if (key->proto == IPPROTO_UDP) {
+		struct udphdr *udp = l4;
+		if ((void *)(udp + 1) > data_end)
+			return 0;
+		payload = (void *)udp + sizeof(struct udphdr);
+	} else {
+		return 0;
+	}
+
+	if (payload >= data_end)
+		return 0;
+
+	struct dpi_event *ev = bpf_ringbuf_reserve(&dpi_events, sizeof(*ev), 0);
+	if (!ev)
+		return 0;
+
+	ev->saddr = key->saddr;
+	ev->daddr = key->daddr;
+	ev->sport = key->sport;
+	ev->dport = key->dport;
+	ev->proto = key->proto;
+
+	if (payload + DPI_CAPTURE_LEN <= data_end) {
+		__builtin_memcpy(ev->payload, payload, DPI_CAPTURE_LEN);
+		ev->payload_len = DPI_CAPTURE_LEN;
+	} else if (payload + 128 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 128);
+		ev->payload_len = 128;
+	} else if (payload + 64 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 64);
+		ev->payload_len = 64;
+	} else if (payload + 32 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 32);
+		ev->payload_len = 32;
+	} else if (payload + 16 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 16);
+		ev->payload_len = 16;
+	} else if (payload + 8 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 8);
+		ev->payload_len = 8;
+	} else if (payload + 1 <= data_end) {
+		__builtin_memcpy(ev->payload, payload, 1);
+		ev->payload_len = 1;
+	} else {
+		bpf_ringbuf_discard(ev, 0);
+		return 0;
+	}
+
+	bpf_ringbuf_submit(ev, 0);
+	return 1;
+}
+
 SEC("xdp")
 int xdp_flow_count(struct xdp_md *ctx)
 {
@@ -261,6 +352,10 @@ int xdp_flow_count(struct xdp_md *ctx)
 	if (stats) {
 		__sync_fetch_and_add(&stats->packets, 1);
 		__sync_fetch_and_add(&stats->bytes, pkt_len);
+		if (stats->dpi_capture_count < DPI_MAX_CAPTURES_PER_FLOW) {
+			if (maybe_capture_dpi_payload(ctx, data, data_end, &key))
+				stats->dpi_capture_count++;
+		}
 	} else {
 		struct flow_stats init = {.packets = 1, .bytes = pkt_len};
 		bpf_map_update_elem(&flow_stats_map, &key, &init, BPF_ANY);

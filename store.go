@@ -19,10 +19,11 @@ import (
 const dbWriteQueueSize = 16
 
 type flowSample struct {
-	key     xdpflowFlowKey
-	packets uint64
-	bytes   uint64
-	domain  string
+	key        xdpflowFlowKey
+	packets    uint64
+	bytes      uint64
+	domain     string
+	dpiService string
 }
 
 type tickSnapshot struct {
@@ -1295,10 +1296,11 @@ func (s *Store) queryTopFlows(cutoff, until int64, limit int) ([]FlowStat, error
 	}
 	out := make([]FlowStat, 0, len(rows))
 	for _, r := range rows {
+		service, dpi := resolveService(r.Key.DstPort, r.DPIService)
 		out = append(out, FlowStat{
 			SrcIP: ipString(r.Key.SrcIP), SrcPort: r.Key.SrcPort,
 			DstIP: ipString(r.Key.DstIP), DstPort: r.Key.DstPort,
-			Proto: protoName(r.Key.Proto), Service: serviceName(r.Key.DstPort),
+			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi,
 			Domain:  r.Domain,
 			Packets: r.Packets, Bytes: r.Bytes,
 		})
@@ -1656,10 +1658,11 @@ func (s *Store) QueryFlowsPaged(from, to time.Time, page, pageSize int, filter F
 	}
 	out := make([]FlowStat, 0, len(rows))
 	for _, r := range rows {
+		service, dpi := resolveService(r.Key.DstPort, r.DPIService)
 		out = append(out, FlowStat{
 			SrcIP: ipString(r.Key.SrcIP), SrcPort: r.Key.SrcPort,
 			DstIP: ipString(r.Key.DstIP), DstPort: r.Key.DstPort,
-			Proto: protoName(r.Key.Proto), Service: serviceName(r.Key.DstPort),
+			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi,
 			Domain:  r.Domain,
 			Packets: r.Packets, Bytes: r.Bytes,
 		})

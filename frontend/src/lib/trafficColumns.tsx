@@ -13,11 +13,14 @@ export function protoColumn<T>(title: string, dataIndex: keyof T & string): Colu
   }
 }
 
-export function ServiceBadge({ svc }: { svc: string }) {
+export function ServiceBadge({ svc, dpi }: { svc: string; dpi?: boolean }) {
   const sc = serviceColor(svc)
   return (
-    <span className="svc-badge" style={sc ? { color: sc.fg, background: sc.bg, borderColor: sc.bd } : undefined}>
-      {svc}
+    <span title={svc}>
+      {dpi && <span className="svc-badge-dpi">DPI</span>}
+      <span className="svc-badge" style={sc ? { color: sc.fg, background: sc.bg, borderColor: sc.bd } : undefined}>
+        {svc}
+      </span>
     </span>
   )
 }

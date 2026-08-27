@@ -86,7 +86,7 @@ function FlowsTab({ range }: { range: TimeRange }) {
       ),
     },
     protoColumn<FlowStat>(t('colProto'), 'proto'),
-    serviceColumn<FlowStat>(t('colSvc'), 'service'),
+    { title: t('colSvc'), dataIndex: 'service', render: (v?: string, f?: FlowStat) => (v ? <ServiceBadge svc={v} dpi={f?.dpi} /> : '--') },
     { title: t('colDomain'), dataIndex: 'domain', render: (v?: string) => (v ? <DomainBadge domain={v} /> : '--') },
     { title: t('colPackets'), dataIndex: 'packets', align: 'right', render: (v: number) => v.toLocaleString() },
     { title: t('colBytes'), dataIndex: 'bytes', align: 'right', render: (v: number) => bytesWithRate(v, windowSeconds) },

@@ -157,8 +157,15 @@ func annotateCountries(db *geoip2.Reader, report *Report) {
 	for i := range report.TopIPs {
 		report.TopIPs[i].Country = resolveCountry(db, report.TopIPs[i].IP)
 	}
-	for i := range report.TopFlows {
-		report.TopFlows[i].SrcCountry = resolveCountry(db, report.TopFlows[i].SrcIP)
-		report.TopFlows[i].DstCountry = resolveCountry(db, report.TopFlows[i].DstIP)
+	annotateCountriesFlows(db, report.TopFlows)
+}
+
+func annotateCountriesFlows(db *geoip2.Reader, flows []FlowStat) {
+	if db == nil {
+		return
+	}
+	for i := range flows {
+		flows[i].SrcCountry = resolveCountry(db, flows[i].SrcIP)
+		flows[i].DstCountry = resolveCountry(db, flows[i].DstIP)
 	}
 }

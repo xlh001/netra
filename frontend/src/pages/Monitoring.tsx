@@ -47,7 +47,7 @@ export function Monitoring() {
           <span className="panel-head-title">{t('monitorPageTitle')}</span>
         </h2>
       </div>
-      <div className="panel-body" style={{ maxWidth: '1080px' }}>
+      <div className="panel-body">
         {loading && !data && <div className="empty">{t('noData')}</div>}
         {error && (
           <div className="empty">
