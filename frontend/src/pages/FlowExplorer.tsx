@@ -11,7 +11,7 @@ import { TrendChart } from '../components/panels/TrendChart'
 import { ProtocolPie } from '../components/panels/ProtocolPie'
 import { formatBps, formatBytes, rangeToSeconds } from '../lib/format'
 import { tablePagination } from '../lib/antdTable'
-import { AssetLabel, CategoryBadge, protoColumn, ServiceBadge, serviceColumn } from '../lib/trafficColumns'
+import { AssetLabel, CategoryBadge, DomainBadge, protoColumn, ServiceBadge, serviceColumn } from '../lib/trafficColumns'
 
 const PAGE_SIZE_CEILING = 20
 
@@ -87,7 +87,7 @@ function FlowsTab({ range }: { range: TimeRange }) {
     },
     protoColumn<FlowStat>(t('colProto'), 'proto'),
     serviceColumn<FlowStat>(t('colSvc'), 'service'),
-    { title: t('colDomain'), dataIndex: 'domain', render: (v?: string) => v || '--' },
+    { title: t('colDomain'), dataIndex: 'domain', render: (v?: string) => (v ? <DomainBadge domain={v} /> : '--') },
     { title: t('colPackets'), dataIndex: 'packets', align: 'right', render: (v: number) => v.toLocaleString() },
     { title: t('colBytes'), dataIndex: 'bytes', align: 'right', render: (v: number) => bytesWithRate(v, windowSeconds) },
   ]

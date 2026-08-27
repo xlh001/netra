@@ -201,7 +201,8 @@ td.svc { color: var(--ink-dim); font-size: 10.5px; overflow: hidden; text-overfl
 .ip-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ip-label { color: var(--good); font-weight: 600; margin-right: 4px; }
 .ip-label::after { content: ' \00b7'; color: var(--ink-dim); font-weight: 400; }
-td.domain-cell { color: var(--ink); font-size: 10.5px; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.domain-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.domain-badge { display: inline-block; background: rgba(155,140,255,0.14); border: 1px solid rgba(155,140,255,0.35); border-radius: 3px; padding: 1px 7px; color: #b9adff; font-size: 10.5px; font-family: var(--font-mono); letter-spacing: .02em; }
 #flows-table { table-layout: fixed; }
 #flows-table th:nth-child(1), #flows-table td:nth-child(1) { width: 24%; }
 #flows-table th:nth-child(2), #flows-table td:nth-child(2) { width: 24%; }

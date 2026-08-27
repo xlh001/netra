@@ -30,6 +30,14 @@ export function serviceColumn<T>(title: string, dataIndex: keyof T & string): Co
   }
 }
 
+export function DomainBadge({ domain }: { domain: string }) {
+  return (
+    <span className="domain-badge" title={domain}>
+      🌍 {domain}
+    </span>
+  )
+}
+
 export function CategoryBadge({ category, index }: { category: string; index: number }) {
   const bg = categoryColor(category, index)
   return (

@@ -203,11 +203,6 @@ func main() {
 		} else {
 			ipTags.rebuild(saved)
 		}
-		if savedPorts, err := store.ListPortMappings(); err != nil {
-			log.Printf("load port mappings: %v", err)
-		} else {
-			portMappings.rebuild(savedPorts)
-		}
 		if savedMCP, err := store.ListMCPServers(); err != nil {
 			log.Printf("load mcp servers: %v", err)
 		} else {

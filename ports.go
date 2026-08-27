@@ -112,10 +112,11 @@ var wellKnownPorts = map[uint16]string{
 	50070: "hadoop-namenode",
 }
 
-var portMappings = newPortMappingCache()
-
 func serviceName(port uint16) string {
-	return portMappings.lookup(port)
+	if name, ok := wellKnownPorts[port]; ok {
+		return name
+	}
+	return ianaPortNames[port]
 }
 
 var serviceCategories = map[string]string{

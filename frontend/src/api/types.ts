@@ -258,17 +258,6 @@ export interface IPTagsPagedResponse {
   tags: IPTagRecord[]
 }
 
-export interface PortMappingRecord {
-  port: number
-  service: string
-}
-
-export interface PortMappingsPagedResponse {
-  total: number
-  page: number
-  mappings: PortMappingRecord[]
-}
-
 export type MCPServerTransport = 'http' | 'stdio'
 export type MCPAuthType = 'none' | 'basic' | 'bearer'
 export type MCPConnStatus = 'connected' | 'error' | 'disconnected'

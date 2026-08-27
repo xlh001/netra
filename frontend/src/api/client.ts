@@ -17,8 +17,6 @@ import type {
   MCPServerTransport,
   MCPToolInfo,
   MonitorSnapshot,
-  PortMappingRecord,
-  PortMappingsPagedResponse,
   PortsPagedResponse,
   Report,
   Role,
@@ -304,22 +302,6 @@ export function updateIPTag(id: number, label: string): Promise<IPTagRecord> {
 
 export function deleteIPTag(id: number): Promise<void> {
   return sendJSON<void>(`/api/admin/ip-tags/${id}`, 'DELETE')
-}
-
-export function getPortMappingsPaged(page: number, pageSize: number, q?: string): Promise<PortMappingsPagedResponse> {
-  return getJSON<PortMappingsPagedResponse>('/api/admin/port-mappings', { page, pageSize, q: q || undefined })
-}
-
-export function createPortMapping(port: number, service: string): Promise<PortMappingRecord> {
-  return sendJSON<PortMappingRecord>('/api/admin/port-mappings', 'POST', { port, service })
-}
-
-export function updatePortMapping(port: number, service: string): Promise<PortMappingRecord> {
-  return sendJSON<PortMappingRecord>(`/api/admin/port-mappings/${port}`, 'PUT', { service })
-}
-
-export function deletePortMapping(port: number): Promise<void> {
-  return sendJSON<void>(`/api/admin/port-mappings/${port}`, 'DELETE')
 }
 
 export function listMCPServers(): Promise<MCPServerRecord[]> {

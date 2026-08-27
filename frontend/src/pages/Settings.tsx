@@ -8,14 +8,11 @@ import { useConfigContext } from '../config/context'
 import {
   createIPTag,
   createMCPServer,
-  createPortMapping,
   createWebhook,
   deleteIPTag,
   deleteMCPServer,
-  deletePortMapping,
   deleteWebhook,
   getIPTagsPaged,
-  getPortMappingsPaged,
   listMCPServers,
   listMCPServerTools,
   listWebhooks,
@@ -25,10 +22,9 @@ import {
   testWebhook,
   updateIPTag,
   updateMCPServer,
-  updatePortMapping,
   updateWebhook,
 } from '../api/client'
-import type { AIProvider, ConfigDTO, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, PortMappingRecord, WebhookChannel, WebhookRecord } from '../api/types'
+import type { AIProvider, ConfigDTO, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, WebhookChannel, WebhookRecord } from '../api/types'
 import { tablePagination } from '../lib/antdTable'
 
 const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; modelPlaceholderKey: string }> = {
@@ -42,7 +38,7 @@ const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; modelPlacehol
   custom: { label: '', modelPlaceholderKey: 'aiModelPlaceholderCustom' },
 }
 
-const CRUD_ONLY_TABS = new Set(['channels', 'ipTags', 'portMappings', 'mcpServers'])
+const CRUD_ONLY_TABS = new Set(['channels', 'ipTags', 'mcpServers'])
 
 export function Settings() {
   const t = useT()
@@ -92,7 +88,6 @@ export function Settings() {
                 { key: 'kafka', label: t('settingsSectionKafka'), forceRender: true, children: <KafkaTab t={t} form={form} /> },
                 { key: 'channels', label: t('settingsSectionChannels'), forceRender: true, children: <ChannelsTab t={t} /> },
                 { key: 'ipTags', label: t('settingsSectionIPTags'), forceRender: true, children: <AssetTagsTab t={t} /> },
-                { key: 'portMappings', label: t('settingsSectionPortMappings'), forceRender: true, children: <PortMappingsTab t={t} /> },
                 { key: 'mcpServers', label: t('settingsSectionMCP'), forceRender: true, children: <MCPServersTab t={t} /> },
               ]}
             />
@@ -823,164 +818,6 @@ function IPTagFormModal({ t, mode, onDone, onCancel }: { t: T; mode: IPTagRecord
         </Form.Item>
         <Form.Item label={t('ipTagsColLabel')} name="label" rules={[{ required: true }]}>
           <Input placeholder={t('ipTagsLabelPlaceholder')} autoFocus={!isNew} />
-        </Form.Item>
-      </Form>
-    </Modal>
-  )
-}
-
-function PortMappingsTab({ t }: { t: T }) {
-  const [mappings, setMappings] = useState<PortMappingRecord[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [page, setPage] = useState(0)
-  const [pageSize, setPageSize] = useState(10)
-  const [q, setQ] = useState('')
-  const [editing, setEditing] = useState<PortMappingRecord | 'new' | null>(null)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await getPortMappingsPaged(page, pageSize, q)
-      setMappings(res.mappings)
-      setTotal(res.total)
-    } catch (err) {
-      message.error(t('fetchFailed') + (err instanceof Error ? err.message : String(err)))
-    } finally {
-      setLoading(false)
-    }
-  }, [t, page, pageSize, q])
-
-  useEffect(() => {
-    refresh()
-  }, [refresh])
-
-  async function handleDelete(m: PortMappingRecord) {
-    try {
-      await deletePortMapping(m.port)
-      message.success(t('portMappingsDeleteButton') + ' ' + m.port)
-      refresh()
-    } catch (err) {
-      message.error(t('portMappingsActionFailed') + (err instanceof Error ? err.message : String(err)))
-    }
-  }
-
-  const columns: ColumnsType<PortMappingRecord> = [
-    { title: t('portMappingsColPort'), dataIndex: 'port', width: 100 },
-    { title: t('portMappingsColService'), dataIndex: 'service' },
-    {
-      title: t('portMappingsColActions'),
-      key: 'actions',
-      width: 140,
-      render: (_, m) => (
-        <>
-          <Button type="link" size="small" onClick={() => setEditing(m)}>
-            {t('portMappingsEditButton')}
-          </Button>
-          <Popconfirm
-            title={t('portMappingsDeleteConfirm', { port: m.port })}
-            onConfirm={() => handleDelete(m)}
-            okText={t('portMappingsDeleteButton')}
-            cancelText={t('ipTagsCancel')}
-            okButtonProps={{ danger: true }}
-          >
-            <Button type="link" size="small" danger>
-              {t('portMappingsDeleteButton')}
-            </Button>
-          </Popconfirm>
-        </>
-      ),
-    },
-  ]
-
-  return (
-    <>
-      <p className="settings-section-desc">{t('portMappingsSectionDesc')}</p>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-        <Input.Search
-          placeholder={t('portMappingsSearchPlaceholder')}
-          style={{ width: 260 }}
-          onSearch={(v) => {
-            setPage(0)
-            setQ(v)
-          }}
-          allowClear
-        />
-        <Button type="primary" size="small" onClick={() => setEditing('new')}>
-          {t('portMappingsCreateButton')}
-        </Button>
-      </div>
-      <div className="compact-table">
-        <Table
-          rowKey="port"
-          columns={columns}
-          dataSource={mappings}
-          loading={loading}
-          size="small"
-          pagination={tablePagination(page, pageSize, total, (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
-          }, t)}
-        />
-      </div>
-
-      {editing && (
-        <PortMappingFormModal
-          t={t}
-          mode={editing}
-          onDone={() => {
-            setEditing(null)
-            refresh()
-          }}
-          onCancel={() => setEditing(null)}
-        />
-      )}
-    </>
-  )
-}
-
-interface PortMappingFormValues {
-  port: number
-  service: string
-}
-
-function PortMappingFormModal({ t, mode, onDone, onCancel }: { t: T; mode: PortMappingRecord | 'new'; onDone: () => void; onCancel: () => void }) {
-  const isNew = mode === 'new'
-  const [form] = Form.useForm<PortMappingFormValues>()
-  const [submitting, setSubmitting] = useState(false)
-
-  async function handleFinish(values: PortMappingFormValues) {
-    setSubmitting(true)
-    try {
-      if (isNew) {
-        await createPortMapping(values.port, values.service)
-      } else {
-        await updatePortMapping(mode.port, values.service)
-      }
-      onDone()
-    } catch (err) {
-      message.error(t('portMappingsActionFailed') + (err instanceof Error ? err.message : String(err)))
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <Modal
-      title={isNew ? t('portMappingsCreateTitle') : t('portMappingsEditTitle')}
-      open
-      onCancel={onCancel}
-      onOk={() => form.submit()}
-      confirmLoading={submitting}
-      okText={t('ipTagsSave')}
-      cancelText={t('ipTagsCancel')}
-    >
-      <Form form={form} layout="vertical" initialValues={isNew ? {} : { port: mode.port, service: mode.service }} onFinish={handleFinish}>
-        <Form.Item label={t('portMappingsColPort')} name="port" rules={[{ required: true }]}>
-          <InputNumber disabled={!isNew} min={1} max={65535} style={{ width: '100%' }} autoFocus={isNew} />
-        </Form.Item>
-        <Form.Item label={t('portMappingsColService')} name="service" rules={[{ required: true }]}>
-          <Input placeholder={t('portMappingsServicePlaceholder')} autoFocus={!isNew} />
         </Form.Item>
       </Form>
     </Modal>

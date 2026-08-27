@@ -67,10 +67,6 @@ func NewStore(path string, retention time.Duration, hotPeriod time.Duration) (*S
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
-	if err := seedPortMappingsIfEmpty(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("seed port mappings: %w", err)
-	}
 	if err := ensureAppConfigCapacityColumns(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate app_config: %w", err)
@@ -196,11 +192,6 @@ func createSchema(db *sql.DB) error {
 			UNIQUE(kind, value)
 		)`,
 
-		`CREATE TABLE IF NOT EXISTS port_mappings (
-			port INTEGER PRIMARY KEY,
-			service TEXT NOT NULL
-		)`,
-
 		`CREATE TABLE IF NOT EXISTS mcp_servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -222,32 +213,6 @@ func createSchema(db *sql.DB) error {
 		}
 	}
 	return nil
-}
-
-func seedPortMappingsIfEmpty(db *sql.DB) error {
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM port_mappings`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT INTO port_mappings(port, service) VALUES (?, ?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for port, service := range wellKnownPorts {
-		if _, err := stmt.Exec(port, service); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func ensureIncrementalVacuum(db *sql.DB) error {
@@ -731,103 +696,6 @@ func (s *Store) UpdateIPTag(id int, label string) (IPTagRecord, error) {
 
 func (s *Store) DeleteIPTag(id int) error {
 	_, err := s.db.Exec(`DELETE FROM ip_tags WHERE id = ?`, id)
-	return err
-}
-
-type PortMappingRecord struct {
-	Port    uint16 `json:"port"`
-	Service string `json:"service"`
-}
-
-func (s *Store) ListPortMappings() ([]PortMappingRecord, error) {
-	rows, err := s.db.Query(`SELECT port, service FROM port_mappings ORDER BY port`)
-	if err != nil {
-		return nil, fmt.Errorf("query port mappings: %w", err)
-	}
-	defer rows.Close()
-
-	out := []PortMappingRecord{}
-	for rows.Next() {
-		var m PortMappingRecord
-		if err := rows.Scan(&m.Port, &m.Service); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) QueryPortMappings(page, pageSize int, q string) ([]PortMappingRecord, int, error) {
-	if page < 0 {
-		page = 0
-	}
-	if pageSize <= 0 {
-		pageSize = 50
-	}
-
-	if q == "" {
-		var total int
-		if err := s.db.QueryRow(`SELECT COUNT(*) FROM port_mappings`).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count port mappings: %w", err)
-		}
-		rows, err := s.db.Query(`SELECT port, service FROM port_mappings ORDER BY port LIMIT ? OFFSET ?`, pageSize, page*pageSize)
-		if err != nil {
-			return nil, 0, fmt.Errorf("query port mappings: %w", err)
-		}
-		defer rows.Close()
-		var out []PortMappingRecord
-		for rows.Next() {
-			var m PortMappingRecord
-			if err := rows.Scan(&m.Port, &m.Service); err != nil {
-				return nil, 0, err
-			}
-			out = append(out, m)
-		}
-		return out, total, rows.Err()
-	}
-
-	rows, err := s.db.Query(`SELECT port, service FROM port_mappings ORDER BY port`)
-	if err != nil {
-		return nil, 0, fmt.Errorf("query port mappings: %w", err)
-	}
-	defer rows.Close()
-	needle := strings.ToLower(q)
-	var all []PortMappingRecord
-	for rows.Next() {
-		var m PortMappingRecord
-		if err := rows.Scan(&m.Port, &m.Service); err != nil {
-			return nil, 0, err
-		}
-		if strings.Contains(strconv.Itoa(int(m.Port)), needle) || strings.Contains(strings.ToLower(m.Service), needle) {
-			all = append(all, m)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	return paginateSlice(all, page, pageSize), len(all), nil
-}
-
-func (s *Store) CreatePortMapping(port uint16, service string) (PortMappingRecord, error) {
-	if _, err := s.db.Exec(`INSERT INTO port_mappings(port, service) VALUES (?, ?)`, port, service); err != nil {
-		return PortMappingRecord{}, fmt.Errorf("insert port mapping: %w", err)
-	}
-	return PortMappingRecord{Port: port, Service: service}, nil
-}
-
-func (s *Store) UpdatePortMapping(port uint16, service string) (PortMappingRecord, error) {
-	res, err := s.db.Exec(`UPDATE port_mappings SET service = ? WHERE port = ?`, service, port)
-	if err != nil {
-		return PortMappingRecord{}, fmt.Errorf("update port mapping: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return PortMappingRecord{}, fmt.Errorf("port %d not found", port)
-	}
-	return PortMappingRecord{Port: port, Service: service}, nil
-}
-
-func (s *Store) DeletePortMapping(port uint16) error {
-	_, err := s.db.Exec(`DELETE FROM port_mappings WHERE port = ?`, port)
 	return err
 }
 

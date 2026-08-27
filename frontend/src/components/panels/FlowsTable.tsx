@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../i18n/context'
 import { formatBps, formatBytes, protoColor, serviceColor, windowToSeconds } from '../../lib/format'
 import { pagesFor, ROTATE_MS } from '../../lib/pagination'
-import { AssetLabel } from '../../lib/trafficColumns'
+import { AssetLabel, DomainBadge } from '../../lib/trafficColumns'
 import type { FlowStat, Report } from '../../api/types'
 
 const PAGE_SIZE_CEILING = 10
@@ -116,9 +116,7 @@ export function FlowRow({ f, windowSeconds }: { f: FlowStat; windowSeconds: numb
           '--'
         )}
       </td>
-      <td className="domain-cell" title={f.domain || ''}>
-        {f.domain || '--'}
-      </td>
+      <td className="domain-cell">{f.domain ? <DomainBadge domain={f.domain} /> : '--'}</td>
       <td className="num">{f.packets.toLocaleString()}</td>
       <td className="num" title={`${formatBytes(f.bytes)}, avg ${formatBps(avgBps)} over the selected window`}>
         {formatBytes(f.bytes)} <span className="bps-hint">({formatBps(avgBps)})</span>

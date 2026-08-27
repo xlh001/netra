@@ -71,7 +71,20 @@ export interface ServiceTint {
   bd: string
 }
 
-export function serviceColor(svc: string): ServiceTint | null {
+function tintFromHex(hex: string): ServiceTint {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return { fg: hex, bg: `rgba(${r},${g},${b},.12)`, bd: `rgba(${r},${g},${b},.35)` }
+}
+
+const OTHER_SERVICE_PALETTE = [
+  '#35e0ff', '#9b8cff', '#ffb454', '#2ee6a8', '#ff5d7a',
+  '#7fdcae', '#ff9e6d', '#c874ff', '#e8c869', '#6ea8ff',
+  '#4fd1c5', '#f472b6', '#8a7355',
+]
+
+export function serviceColor(svc: string): ServiceTint {
   switch (svc) {
     case 'https':
       return { fg: '#7fdcae', bg: 'rgba(127,220,174,.12)', bd: 'rgba(127,220,174,.35)' }
@@ -88,7 +101,7 @@ export function serviceColor(svc: string): ServiceTint | null {
     case 'smtp':
       return { fg: '#f472b6', bg: 'rgba(244,114,182,.12)', bd: 'rgba(244,114,182,.35)' }
     default:
-      return null
+      return tintFromHex(OTHER_SERVICE_PALETTE[hashString(svc) % OTHER_SERVICE_PALETTE.length])
   }
 }
 
