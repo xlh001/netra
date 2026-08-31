@@ -63,10 +63,10 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 		go func() {
 			summary := ""
 			if cfg.AIEnabled && cfg.AIBaseURL != "" && cfg.AIModel != "" {
-				if s, err := summarizeAlertForNotify(cfg, alert, now); err != nil {
-					log.Printf("webhooks: AI alert summary failed, falling back to raw fields only: %v", err)
-				} else {
+				if s, ok := summarizeAlertForNotifyLimited(cfg, alert, now); ok {
 					summary = s
+				} else {
+					log.Printf("webhooks: AI alert summary skipped (busy or failed), falling back to raw fields only")
 				}
 			}
 			for _, wh := range webhooks {

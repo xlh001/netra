@@ -9,9 +9,10 @@ import type { CategoryStat, DomainStat, FlowStat, IPStat, PortStat, TimeRange } 
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
 import { TrendChart } from '../components/panels/TrendChart'
 import { ProtocolPie } from '../components/panels/ProtocolPie'
+import { IPProfileDrawer } from '../components/panels/IPProfileDrawer'
 import { formatBps, formatBytes, rangeToSeconds } from '../lib/format'
 import { tablePagination } from '../lib/antdTable'
-import { AssetLabel, CategoryBadge, DomainBadge, protoColumn, ServiceBadge, serviceColumn } from '../lib/trafficColumns'
+import { AssetLabel, CategoryBadge, DomainBadge, FlowRoleIcon, protoColumn, ServiceBadge } from '../lib/trafficColumns'
 
 const PAGE_SIZE_CEILING = 20
 
@@ -60,6 +61,8 @@ function FlowsTab({ range }: { range: TimeRange }) {
   const t = useT()
   const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState(PAGE_SIZE_CEILING, CHARTS_ROW_CHROME_PX)
   const [ipFilter, setIpFilter] = useState('')
+  const [profileIP, setProfileIP] = useState<string>()
+  const [profileOpen, setProfileOpen] = useState(false)
   const { data, loading, error } = usePolling(() => getFlowsPaged(range, page, pageSize, ipFilter || undefined), 0, [range, page, pageSize, ipFilter])
   const { data: timeseries, loading: timeseriesLoading } = usePolling(() => getTimeseriesRange(range), 0, [range])
   const windowSeconds = rangeToSeconds(range)
@@ -70,8 +73,10 @@ function FlowsTab({ range }: { range: TimeRange }) {
       key: 'src',
       render: (_, f) => (
         <>
+          <FlowRoleIcon initiator={!f.svcOnSrc} />
           <AssetLabel label={f.srcLabel} value={f.srcIP} />
           {f.srcPort ? ':' + f.srcPort : ''}
+          {f.service && f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
         </>
       ),
     },
@@ -80,13 +85,14 @@ function FlowsTab({ range }: { range: TimeRange }) {
       key: 'dst',
       render: (_, f) => (
         <>
+          <FlowRoleIcon initiator={!!f.svcOnSrc} />
           <AssetLabel label={f.dstLabel} value={f.dstIP} />
           {f.dstPort ? ':' + f.dstPort : ''}
+          {f.service && !f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
         </>
       ),
     },
     protoColumn<FlowStat>(t('colProto'), 'proto'),
-    { title: t('colSvc'), dataIndex: 'service', render: (v?: string, f?: FlowStat) => (v ? <ServiceBadge svc={v} dpi={f?.dpi} /> : '--') },
     { title: t('colDomain'), dataIndex: 'domain', render: (v?: string) => (v ? <DomainBadge domain={v} /> : '--') },
     { title: t('colPackets'), dataIndex: 'packets', align: 'right', render: (v: number) => v.toLocaleString() },
     { title: t('colBytes'), dataIndex: 'bytes', align: 'right', render: (v: number) => bytesWithRate(v, windowSeconds) },
@@ -102,15 +108,28 @@ function FlowsTab({ range }: { range: TimeRange }) {
           <ProtocolPie timeseries={timeseries ?? null} loading={timeseriesLoading} />
         </div>
       </div>
-      <Input.Search
-        placeholder={t('flowsFilterIPPlaceholder')}
-        style={{ width: 260, marginBottom: 12 }}
-        onSearch={(v) => {
-          setPage(0)
-          setIpFilter(v)
-        }}
-        allowClear
-      />
+      <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+        <Input.Search
+          placeholder={t('flowsFilterIPPlaceholder')}
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            setPage(0)
+            setIpFilter(v)
+          }}
+          allowClear
+        />
+        <Input.Search
+          placeholder={t('ipProfilePlaceholder')}
+          enterButton={t('ipProfileButton')}
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            if (!v) return
+            setProfileIP(v)
+            setProfileOpen(true)
+          }}
+        />
+      </div>
+      <IPProfileDrawer ip={profileIP} open={profileOpen} onClose={() => setProfileOpen(false)} />
       <Table
         rowKey={(f) => `${f.srcIP}:${f.srcPort}-${f.dstIP}:${f.dstPort}-${f.proto}`}
         columns={columns}
@@ -170,7 +189,7 @@ function PortsTab({ range }: { range: TimeRange }) {
   const columns: ColumnsType<PortStat> = [
     protoColumn<PortStat>(t('colProto'), 'proto'),
     { title: t('colPort'), dataIndex: 'port' },
-    serviceColumn<PortStat>(t('colSvc'), 'service'),
+    { title: t('colSvc'), dataIndex: 'service', render: (v: string, r) => (v ? <ServiceBadge svc={v} dpi={r.dpi} /> : '--') },
     { title: t('colPackets'), dataIndex: 'packets', align: 'right', render: (v: number) => v.toLocaleString() },
     { title: t('colBytes'), dataIndex: 'bytes', align: 'right', render: (v: number) => bytesWithRate(v, windowSeconds) },
   ]

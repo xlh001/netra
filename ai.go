@@ -137,6 +137,25 @@ func summarizeAlertForNotify(cfg ConfigDTO, a ThreatAlert, ts time.Time) (string
 	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
+const maxConcurrentAlertSummaries = 8
+
+var alertSummarySem = make(chan struct{}, maxConcurrentAlertSummaries)
+
+func summarizeAlertForNotifyLimited(cfg ConfigDTO, a ThreatAlert, ts time.Time) (summary string, ok bool) {
+	select {
+	case alertSummarySem <- struct{}{}:
+	case <-time.After(3 * time.Second):
+		return "", false
+	}
+	defer func() { <-alertSummarySem }()
+
+	s, err := summarizeAlertForNotify(cfg, a, ts)
+	if err != nil {
+		return "", false
+	}
+	return s, true
+}
+
 const toolResultLimit = 20
 
 var builtinChatTools = []toolSpec{

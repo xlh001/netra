@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useT } from '../../i18n/context'
 import { formatBps, formatBytes, protoColor, windowToSeconds } from '../../lib/format'
 import { pagesFor, ROTATE_MS } from '../../lib/pagination'
-import { AssetLabel, DomainBadge, ServiceBadge } from '../../lib/trafficColumns'
+import { AssetLabel, DomainBadge, FlowRoleIcon, ServiceBadge } from '../../lib/trafficColumns'
 import type { FlowStat, Report } from '../../api/types'
 
 const PAGE_SIZE_CEILING = 10
@@ -65,7 +65,6 @@ export function FlowsTable({ report }: { report: Report | null }) {
               <th>{t('colSrc')}</th>
               <th>{t('colDst')}</th>
               <th>{t('colProto')}</th>
-              <th>{t('colSvc')}</th>
               <th>{t('colDomain')}</th>
               <th className="num">{t('colPackets')}</th>
               <th className="num">{t('colBytes')}</th>
@@ -74,7 +73,7 @@ export function FlowsTable({ report }: { report: Report | null }) {
           <tbody>
             {!pageFlows.length ? (
               <tr>
-                <td colSpan={7} className="empty">
+                <td colSpan={6} className="empty">
                   {t('noData')}
                 </td>
               </tr>
@@ -94,19 +93,22 @@ export function FlowRow({ f, windowSeconds }: { f: FlowStat; windowSeconds: numb
   return (
     <tr>
       <td className="ip-cell" title={f.srcLabel ? `${f.srcLabel} (${f.srcIP})` : undefined}>
+        <FlowRoleIcon initiator={!f.svcOnSrc} />
         {f.srcCountry && <img className="flag-icon" src={`/vendor/flags/${f.srcCountry.toLowerCase()}.svg`} alt={f.srcCountry} onError={(e) => (e.currentTarget.style.display = 'none')} />}
         <AssetLabel label={f.srcLabel} value={f.srcIP} />
         {f.srcPort ? ':' + f.srcPort : ''}
+        {f.service && f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
       </td>
       <td className="ip-cell" title={f.dstLabel ? `${f.dstLabel} (${f.dstIP})` : undefined}>
+        <FlowRoleIcon initiator={!!f.svcOnSrc} />
         {f.dstCountry && <img className="flag-icon" src={`/vendor/flags/${f.dstCountry.toLowerCase()}.svg`} alt={f.dstCountry} onError={(e) => (e.currentTarget.style.display = 'none')} />}
         <AssetLabel label={f.dstLabel} value={f.dstIP} />
         {f.dstPort ? ':' + f.dstPort : ''}
+        {f.service && !f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
       </td>
       <td className="proto-cell" style={{ ['--dot' as string]: protoColor(f.proto) }}>
         {f.proto.toUpperCase()}
       </td>
-      <td className="svc">{f.service ? <ServiceBadge svc={f.service} dpi={f.dpi} /> : '--'}</td>
       <td className="domain-cell">{f.domain ? <DomainBadge domain={f.domain} /> : '--'}</td>
       <td className="num">{f.packets.toLocaleString()}</td>
       <td className="num" title={`${formatBytes(f.bytes)}, avg ${formatBps(avgBps)} over the selected window`}>

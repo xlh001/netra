@@ -354,11 +354,13 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 	protoBytes := map[uint8]uint64{}
 	ipTotals := map[uint32]xdpflowFlowStats{}
 	portTotals := map[portKey]xdpflowFlowStats{}
+	portDPI := map[portKey]string{}
 
 	type flowDelta struct {
 		key     xdpflowFlowKey
 		packets uint64
 		bytes   uint64
+		svcPort uint16
 	}
 	activeFlows := make([]flowDelta, 0, len(cur))
 
@@ -375,7 +377,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		if dp == 0 && db == 0 {
 			continue
 		}
-		activeFlows = append(activeFlows, flowDelta{k, dp, db})
+		activeFlows = append(activeFlows, flowDelta{k, dp, db, s.SvcPort})
 
 		protoPackets[k.Proto] += dp
 		protoBytes[k.Proto] += db
@@ -383,7 +385,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		addStats(ipTotals, k.Saddr, dp, db)
 		addStats(ipTotals, k.Daddr, dp, db)
 
-		addPortStats(portTotals, portKey{proto: k.Proto, port: k.Dport}, dp, db)
+		addPortStats(portTotals, portKey{proto: k.Proto, port: effectivePort(s.SvcPort, k.Dport)}, dp, db)
 	}
 
 	distinctFlowCount := len(activeFlows)
@@ -406,7 +408,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 	activeFlows = activeFlows[:memCut]
 	flows := make(map[xdpflowFlowKey]xdpflowFlowStats, len(activeFlows))
 	for _, f := range activeFlows {
-		flows[f.key] = xdpflowFlowStats{Packets: f.packets, Bytes: f.bytes}
+		flows[f.key] = xdpflowFlowStats{Packets: f.packets, Bytes: f.bytes, SvcPort: f.svcPort}
 	}
 
 	ips := topKUint32(ipTotals, topKPerBucket)
@@ -427,11 +429,15 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 
 	dbFlowSamples := make([]flowSample, len(dbFlows))
 	for i, f := range dbFlows {
-		dbFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname, dpiService: a.dpiServiceByFlow[f.key].service}
+		dpiService := a.dpiServiceByFlow[f.key].service
+		dbFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, svcPort: f.svcPort, domain: a.domainByFlow[f.key].hostname, dpiService: dpiService}
+		if dpiService != "" {
+			portDPI[portKey{proto: f.key.Proto, port: effectivePort(f.svcPort, f.key.Dport)}] = dpiService
+		}
 	}
 	kafkaFlowSamples := make([]flowSample, len(kafkaFlowsRaw))
 	for i, f := range kafkaFlowsRaw {
-		kafkaFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, domain: a.domainByFlow[f.key].hostname, dpiService: a.dpiServiceByFlow[f.key].service}
+		kafkaFlowSamples[i] = flowSample{key: f.key, packets: f.packets, bytes: f.bytes, svcPort: f.svcPort, domain: a.domainByFlow[f.key].hostname, dpiService: a.dpiServiceByFlow[f.key].service}
 	}
 
 	a.buckets = append(a.buckets, b)
@@ -454,6 +460,7 @@ func (a *aggregator) push(now time.Time, cur, prev map[xdpflowFlowKey]xdpflowFlo
 		kafkaFlows:        kafkaFlowSamples,
 		ips:               ips,
 		ports:             ports,
+		portDPI:           portDPI,
 		distinctFlowCount: distinctFlowCount,
 	}
 }
@@ -546,6 +553,7 @@ type FlowStat struct {
 	Proto      string `json:"proto"`
 	Service    string `json:"service,omitempty"`
 	DPI        bool   `json:"dpi,omitempty"`
+	SvcOnSrc   bool   `json:"svcOnSrc,omitempty"`
 	Domain     string `json:"domain,omitempty"`
 	Packets    uint64 `json:"packets"`
 	Bytes      uint64 `json:"bytes"`
@@ -564,6 +572,7 @@ type PortStat struct {
 	Port    uint16 `json:"port"`
 	Proto   string `json:"proto"`
 	Service string `json:"service,omitempty"`
+	DPI     bool   `json:"dpi,omitempty"`
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`
 }
@@ -572,6 +581,43 @@ type ServiceStat struct {
 	Service string `json:"service"`
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`
+}
+
+type IPProfilePeer struct {
+	Peer  string `json:"peer"`
+	Bytes uint64 `json:"bytes"`
+}
+
+type IPProfileService struct {
+	Service string `json:"service"`
+	DPI     bool   `json:"dpi,omitempty"`
+	Bytes   uint64 `json:"bytes"`
+}
+
+type IPProfileTrendPoint struct {
+	Time    time.Time `json:"time"`
+	Bytes   uint64    `json:"bytes"`
+	Packets uint64    `json:"packets"`
+}
+
+type IPProfile struct {
+	IP             string                `json:"ip"`
+	Label          string                `json:"label,omitempty"`
+	Country        string                `json:"country,omitempty"`
+	Org            string                `json:"org,omitempty"`
+	FirstSeen      int64                 `json:"firstSeen,omitempty"`
+	LastSeen       int64                 `json:"lastSeen,omitempty"`
+	TotalBytes     uint64                `json:"totalBytes"`
+	TotalPackets   uint64                `json:"totalPackets"`
+	PeerCount      int                   `json:"peerCount"`
+	InitiatorBytes uint64                `json:"initiatorBytes"`
+	ReceiverBytes  uint64                `json:"receiverBytes"`
+	TopPeers          []IPProfilePeer       `json:"topPeers"`
+	TopServices       []IPProfileService    `json:"topServices"`
+	TotalServiceCount int                   `json:"totalServiceCount"`
+	Trend             []IPProfileTrendPoint `json:"trend"`
+	Alerts            []ThreatAlertRecord   `json:"alerts"`
+	TotalAlertCount   int                   `json:"totalAlertCount"`
 }
 
 type CategoryStat struct {

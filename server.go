@@ -202,6 +202,29 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			Flows []FlowStat `json:"flows"`
 		}{total, page, flows})
 	})))
+	mux.Handle("/api/admin/ip-profile", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		ip := r.URL.Query().Get("ip")
+		if ip == "" {
+			http.Error(w, "missing ip", http.StatusBadRequest)
+			return
+		}
+		profile, err := store.QueryIPProfile(from, to, ip)
+		if err != nil {
+			writeStoreQueryError(w, err)
+			return
+		}
+		profile.Label = resolveIPTag(ipTags, ip)
+		profile.Country = resolveCountry(geoDB, ip)
+		profile.Org = resolveOrg(asnDB, ip)
+		annotateIPTagsAlerts(ipTags, profile.Alerts)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(profile)
+	})))
 	mux.Handle("/api/admin/ips", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		from, to, err := parseRange(r)
 		if err != nil {

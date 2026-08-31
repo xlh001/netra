@@ -68,6 +68,7 @@ export function Chat({ aiEnabled }: { aiEnabled: boolean }) {
   }, [streaming])
 
   const skipNextHistoryFetchRef = useRef(false)
+  const deletedIdsRef = useRef<Set<number>>(new Set())
 
   async function refreshSessions() {
     setLoadingSessions(true)
@@ -105,7 +106,7 @@ export function Chat({ aiEnabled }: { aiEnabled: boolean }) {
         if (!cancelled) setMessages(msgs)
       })
       .catch((err) => {
-        if (!cancelled) message.error(t('fetchFailed') + (err instanceof Error ? err.message : String(err)))
+        if (!cancelled && !deletedIdsRef.current.has(activeId)) message.error(t('fetchFailed') + (err instanceof Error ? err.message : String(err)))
       })
       .finally(() => {
         if (!cancelled) setLoadingMessages(false)
@@ -132,6 +133,7 @@ export function Chat({ aiEnabled }: { aiEnabled: boolean }) {
   async function handleDeleteSession(id: number) {
     try {
       await deleteChatSession(id)
+      deletedIdsRef.current.add(id)
       setSessions((prev) => prev.filter((s) => s.id !== id))
       if (activeId === id) setActiveId(null)
     } catch (err) {

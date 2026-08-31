@@ -28,7 +28,8 @@ type xdpflowFlowStats struct {
 	Packets         uint64
 	Bytes           uint64
 	DpiCaptureCount uint8
-	Pad             [7]uint8
+	Pad             [5]uint8
+	SvcPort         uint16
 }
 
 // Names of all BPF objects in the ELF.

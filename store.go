@@ -22,6 +22,7 @@ type flowSample struct {
 	key        xdpflowFlowKey
 	packets    uint64
 	bytes      uint64
+	svcPort    uint16
 	domain     string
 	dpiService string
 }
@@ -34,6 +35,7 @@ type tickSnapshot struct {
 	kafkaFlows        []flowSample
 	ips               map[uint32]xdpflowFlowStats
 	ports             map[portKey]xdpflowFlowStats
+	portDPI           map[portKey]string
 	distinctFlowCount int
 	scanAlerts        []ThreatAlert
 }
@@ -1131,7 +1133,7 @@ func (s *Store) writeTick(snap tickSnapshot) error {
 		return fmt.Errorf("commit bucket_summary/threat_alerts: %w", err)
 	}
 
-	if err := s.ts.writeTick(ts, snap.flows, snap.ips, snap.ports); err != nil {
+	if err := s.ts.writeTick(ts, snap.flows, snap.ips, snap.ports, snap.portDPI); err != nil {
 		return fmt.Errorf("write time-series tick: %w", err)
 	}
 	return nil
@@ -1296,11 +1298,11 @@ func (s *Store) queryTopFlows(cutoff, until int64, limit int) ([]FlowStat, error
 	}
 	out := make([]FlowStat, 0, len(rows))
 	for _, r := range rows {
-		service, dpi := resolveService(r.Key.DstPort, r.DPIService)
+		service, dpi, svcOnSrc := resolveServiceForFlow(r.Key.SrcPort, r.Key.DstPort, r.SvcPort, r.DPIService)
 		out = append(out, FlowStat{
 			SrcIP: ipString(r.Key.SrcIP), SrcPort: r.Key.SrcPort,
 			DstIP: ipString(r.Key.DstIP), DstPort: r.Key.DstPort,
-			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi,
+			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi, SvcOnSrc: svcOnSrc,
 			Domain:  r.Domain,
 			Packets: r.Packets, Bytes: r.Bytes,
 		})
@@ -1327,7 +1329,8 @@ func (s *Store) queryTopPorts(cutoff, until int64, limit int) ([]PortStat, error
 	}
 	out := make([]PortStat, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, PortStat{Port: r.Key.Port, Proto: protoName(r.Key.Proto), Service: serviceName(r.Key.Port), Packets: r.Packets, Bytes: r.Bytes})
+		service, dpi := resolveService(r.Key.Port, r.DPIService)
+		out = append(out, PortStat{Port: r.Key.Port, Proto: protoName(r.Key.Proto), Service: service, DPI: dpi, Packets: r.Packets, Bytes: r.Bytes})
 	}
 	return out, nil
 }
@@ -1384,11 +1387,12 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 		pageSize = 50
 	}
 
-	toStat := func(r aggRow[tsPortKey]) PortStat {
-		return PortStat{Port: r.Key.Port, Proto: protoName(r.Key.Proto), Service: serviceName(r.Key.Port), Packets: r.Packets, Bytes: r.Bytes}
+	toStat := func(r portAggRow) PortStat {
+		service, dpi := resolveService(r.Key.Port, r.DPIService)
+		return PortStat{Port: r.Key.Port, Proto: protoName(r.Key.Proto), Service: service, DPI: dpi, Packets: r.Packets, Bytes: r.Bytes}
 	}
 
-	var pageRows []aggRow[tsPortKey]
+	var pageRows []portAggRow
 	var total int
 	var err error
 	if filter == "" {
@@ -1397,10 +1401,10 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 		// filter matches against the formatted "proto/port service" text,
 		// not a column DuckDB can push a LIKE into directly -- pull
 		// everything, filter/sort/paginate in Go.
-		var all []aggRow[tsPortKey]
+		var all []portAggRow
 		all, err = s.ts.queryPorts(cutoff, upper)
 		if err == nil {
-			var filtered []aggRow[tsPortKey]
+			var filtered []portAggRow
 			needle := strings.ToLower(filter)
 			for _, r := range all {
 				ps := toStat(r)
@@ -1658,16 +1662,191 @@ func (s *Store) QueryFlowsPaged(from, to time.Time, page, pageSize int, filter F
 	}
 	out := make([]FlowStat, 0, len(rows))
 	for _, r := range rows {
-		service, dpi := resolveService(r.Key.DstPort, r.DPIService)
+		service, dpi, svcOnSrc := resolveServiceForFlow(r.Key.SrcPort, r.Key.DstPort, r.SvcPort, r.DPIService)
 		out = append(out, FlowStat{
 			SrcIP: ipString(r.Key.SrcIP), SrcPort: r.Key.SrcPort,
 			DstIP: ipString(r.Key.DstIP), DstPort: r.Key.DstPort,
-			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi,
+			Proto: protoName(r.Key.Proto), Service: service, DPI: dpi, SvcOnSrc: svcOnSrc,
 			Domain:  r.Domain,
 			Packets: r.Packets, Bytes: r.Bytes,
 		})
 	}
 	return out, total, nil
+}
+
+const (
+	ipProfileTopPeers    = 10
+	ipProfileTopServices = 10
+	ipProfileTopAlerts   = 20
+)
+
+func (s *Store) QueryIPProfile(from, to time.Time, ipStr string) (IPProfile, error) {
+	ip, err := ipToUint32(ipStr)
+	if err != nil {
+		return IPProfile{}, fmt.Errorf("invalid ip: %w", err)
+	}
+	cutoff, until := from.Unix(), to.Unix()
+
+	timeline, err := s.ts.queryIPTimeline(cutoff, until, ip)
+	if err != nil {
+		return IPProfile{}, fmt.Errorf("query ip timeline: %w", err)
+	}
+	sort.Slice(timeline, func(i, j int) bool { return timeline[i].Key < timeline[j].Key })
+
+	profile := IPProfile{IP: ipStr}
+	for _, r := range timeline {
+		profile.TotalBytes += r.Bytes
+		profile.TotalPackets += r.Packets
+	}
+	if len(timeline) > 0 {
+		profile.FirstSeen = timeline[0].Key
+		profile.LastSeen = timeline[len(timeline)-1].Key
+	}
+	profile.Trend = bucketIPTimeline(timeline, cutoff, until)
+
+	flowRows, _, err := s.ts.queryFlowsLimited(cutoff, until, &ip, 5000, 0, false)
+	if err != nil {
+		return IPProfile{}, fmt.Errorf("query ip flows: %w", err)
+	}
+
+	peerIPBytes := map[uint32]uint64{}
+	peerDisplayBytes := map[string]uint64{}
+	serviceBytes := map[string]uint64{}
+	serviceDPI := map[string]bool{}
+	for _, r := range flowRows {
+		svcOnSrc := r.SvcPort != 0 && r.SvcPort == r.Key.SrcPort
+		service, dpi := resolveService(effectivePort(r.SvcPort, r.Key.DstPort), r.DPIService)
+		if service == "" {
+			service = "未知"
+		}
+		serviceBytes[service] += r.Bytes
+		if dpi {
+			serviceDPI[service] = true
+		}
+		if r.Key.SrcIP == ip {
+			peerIPBytes[r.Key.DstIP] += r.Bytes
+			display := ipString(r.Key.DstIP)
+			if r.Domain != "" {
+				display = r.Domain
+			}
+			peerDisplayBytes[display] += r.Bytes
+			if svcOnSrc {
+				profile.ReceiverBytes += r.Bytes
+			} else {
+				profile.InitiatorBytes += r.Bytes
+			}
+		}
+		if r.Key.DstIP == ip {
+			peerIPBytes[r.Key.SrcIP] += r.Bytes
+			peerDisplayBytes[ipString(r.Key.SrcIP)] += r.Bytes
+			if svcOnSrc {
+				profile.InitiatorBytes += r.Bytes
+			} else {
+				profile.ReceiverBytes += r.Bytes
+			}
+		}
+	}
+	profile.PeerCount = len(peerIPBytes)
+
+	type peerKV struct {
+		name  string
+		bytes uint64
+	}
+	peers := make([]peerKV, 0, len(peerDisplayBytes))
+	for name, b := range peerDisplayBytes {
+		peers = append(peers, peerKV{name, b})
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].bytes > peers[j].bytes })
+	if len(peers) > ipProfileTopPeers {
+		peers = peers[:ipProfileTopPeers]
+	}
+	for _, p := range peers {
+		profile.TopPeers = append(profile.TopPeers, IPProfilePeer{Peer: p.name, Bytes: p.bytes})
+	}
+
+	type svcKV struct {
+		name  string
+		bytes uint64
+	}
+	svcs := make([]svcKV, 0, len(serviceBytes))
+	for name, b := range serviceBytes {
+		svcs = append(svcs, svcKV{name, b})
+	}
+	profile.TotalServiceCount = len(svcs)
+	sort.Slice(svcs, func(i, j int) bool { return svcs[i].bytes > svcs[j].bytes })
+	if len(svcs) > ipProfileTopServices {
+		svcs = svcs[:ipProfileTopServices]
+	}
+	for _, sv := range svcs {
+		profile.TopServices = append(profile.TopServices, IPProfileService{Service: sv.name, DPI: serviceDPI[sv.name], Bytes: sv.bytes})
+	}
+
+	alerts, alertTotal, err := s.QueryThreatAlertsForIP(ipStr, ipProfileTopAlerts)
+	if err != nil {
+		return IPProfile{}, fmt.Errorf("query ip alerts: %w", err)
+	}
+	profile.Alerts = alerts
+	profile.TotalAlertCount = alertTotal
+
+	if profile.TopPeers == nil {
+		profile.TopPeers = []IPProfilePeer{}
+	}
+	if profile.TopServices == nil {
+		profile.TopServices = []IPProfileService{}
+	}
+	if profile.Alerts == nil {
+		profile.Alerts = []ThreatAlertRecord{}
+	}
+
+	return profile, nil
+}
+
+func bucketIPTimeline(timeline []aggRow[int64], cutoff, until int64) []IPProfileTrendPoint {
+	span := until - cutoff
+	slotSize := int64(60)
+	switch {
+	case span > 86400:
+		slotSize = 86400
+	case span > 3600:
+		slotSize = 3600
+	}
+	buckets := map[int64]*IPProfileTrendPoint{}
+	var order []int64
+	for _, r := range timeline {
+		slot := (r.Key / slotSize) * slotSize
+		b, ok := buckets[slot]
+		if !ok {
+			b = &IPProfileTrendPoint{Time: time.Unix(slot, 0)}
+			buckets[slot] = b
+			order = append(order, slot)
+		}
+		b.Bytes += r.Bytes
+		b.Packets += r.Packets
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	out := make([]IPProfileTrendPoint, 0, len(order))
+	for _, slot := range order {
+		out = append(out, *buckets[slot])
+	}
+	return out
+}
+
+func (s *Store) QueryThreatAlertsForIP(ipStr string, limit int) ([]ThreatAlertRecord, int, error) {
+	ip, err := ipToUint32(ipStr)
+	if err != nil {
+		return nil, 0, fmt.Errorf("invalid ip: %w", err)
+	}
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM threat_alerts WHERE ip = ?`, ip).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count threat alerts: %w", err)
+	}
+	rows, err := s.db.Query(`SELECT ts, kind, ip, distinct_peers, volume_bytes FROM threat_alerts WHERE ip = ? ORDER BY ts DESC LIMIT ?`, ip, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query threat alerts: %w", err)
+	}
+	defer rows.Close()
+	alerts, err := scanThreatAlertRows(rows)
+	return alerts, total, err
 }
 
 type ThreatAlertRecord struct {

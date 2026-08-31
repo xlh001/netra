@@ -113,22 +113,14 @@ func detectGreetingService(payload []byte) (string, bool) {
 	return "", false
 }
 
-// isTLSClientHello mirrors the check bpf/xdp_flow.c already does for the
-// dedicated SNI capture, just without the dport==443 gate: TLS record type
-// 0x16 (handshake) + handshake message type 0x01 (ClientHello) at offset 5.
 func isTLSClientHello(payload []byte) bool {
 	return len(payload) >= 6 && payload[0] == 0x16 && payload[5] == 0x01
 }
 
-// isRDPConnectionRequest matches the TPKT + X.224 Connection Request TPDU
-// a client sends first: "03 00 <len:2> <li> E0 ...".
 func isRDPConnectionRequest(payload []byte) bool {
 	return len(payload) >= 6 && payload[0] == 0x03 && payload[1] == 0x00 && payload[5] == 0xE0
 }
 
-// isMySQLHandshake matches the server's initial handshake packet: a 4-byte
-// packet header (3-byte length + 1-byte sequence id) followed by protocol
-// version 0x0A and a null-terminated printable-ASCII server version string.
 func isMySQLHandshake(payload []byte) bool {
 	if len(payload) < 6 || payload[4] != 0x0A {
 		return false
@@ -144,14 +136,10 @@ func isMySQLHandshake(payload []byte) bool {
 	return false
 }
 
-// isPostgresStartup matches the client's StartupMessage: 4-byte length
-// followed by protocol version 3.0 (0x00030000).
 func isPostgresStartup(payload []byte) bool {
 	return len(payload) >= 8 && payload[4] == 0x00 && payload[5] == 0x03 && payload[6] == 0x00 && payload[7] == 0x00
 }
 
-// isMongoDBWireMessage checks the fixed 16-byte MongoDB wire protocol header
-// for a known opCode: OP_MSG (2013) or the legacy OP_QUERY (2004).
 func isMongoDBWireMessage(payload []byte) bool {
 	if len(payload) < 16 {
 		return false
@@ -160,7 +148,6 @@ func isMongoDBWireMessage(payload []byte) bool {
 	return opCode == 2013 || opCode == 2004
 }
 
-// isRedisCommand matches a RESP-encoded command array, e.g. "*1\r\n$4\r\nPING\r\n".
 func isRedisCommand(payload []byte) bool {
 	if len(payload) < 4 || payload[0] != '*' || payload[1] < '0' || payload[1] > '9' {
 		return false

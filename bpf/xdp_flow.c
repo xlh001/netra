@@ -25,7 +25,8 @@ struct flow_stats {
 	__u64 packets;
 	__u64 bytes;
 	__u8 dpi_capture_count;
-	__u8 pad[7];
+	__u8 pad[5];
+	__u16 svc_port;
 };
 
 struct {
@@ -125,6 +126,25 @@ static __always_inline int parse_flow(void *data, void *data_end, struct flow_ke
 	}
 
 	return 0;
+}
+
+static __always_inline __u16 resolve_svc_port(void *data, void *data_end, const struct flow_key *key)
+{
+	if (key->proto != IPPROTO_TCP)
+		return key->dport;
+
+	struct ethhdr *eth = data;
+	struct iphdr *ip = (void *)(eth + 1);
+	if ((void *)(ip + 1) > data_end)
+		return key->dport;
+	struct tcphdr *tcp = (void *)ip + (ip->ihl * 4);
+	if ((void *)(tcp + 1) > data_end)
+		return key->dport;
+
+	if (tcp->syn && tcp->ack)
+		return key->sport;
+
+	return key->dport;
 }
 
 static __always_inline void maybe_capture_tls_clienthello(struct xdp_md *ctx, void *data, void *data_end, const struct flow_key *key)
@@ -357,7 +377,7 @@ int xdp_flow_count(struct xdp_md *ctx)
 				stats->dpi_capture_count++;
 		}
 	} else {
-		struct flow_stats init = {.packets = 1, .bytes = pkt_len};
+		struct flow_stats init = {.packets = 1, .bytes = pkt_len, .svc_port = resolve_svc_port(data, data_end, &key)};
 		bpf_map_update_elem(&flow_stats_map, &key, &init, BPF_ANY);
 	}
 

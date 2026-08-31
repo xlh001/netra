@@ -7,26 +7,10 @@ import { usePagedState } from '../hooks/usePagedState'
 import { getThreatAlertsPaged } from '../api/client'
 import type { AlertKind, ThreatAlertRecord } from '../api/types'
 import { tablePagination } from '../lib/antdTable'
-import { AssetLabel } from '../lib/trafficColumns'
+import { AlertKindBadge, AssetLabel } from '../lib/trafficColumns'
 import { formatBytes } from '../lib/format'
 
 const PAGE_SIZE_CEILING = 20
-
-const KIND_LABEL_KEY: Record<AlertKind, 'threatsKindScan' | 'threatsKindDDoS' | 'threatsKindVolume'> = {
-  scan: 'threatsKindScan',
-  ddos: 'threatsKindDDoS',
-  volume: 'threatsKindVolume',
-}
-
-function KindBadge({ kind }: { kind: AlertKind }) {
-  const t = useT()
-  const color = kind === 'scan' ? 'var(--amber)' : 'var(--rose)'
-  return (
-    <span className="svc-badge" style={{ color, borderColor: color }}>
-      {t(KIND_LABEL_KEY[kind])}
-    </span>
-  )
-}
 
 export function ThreatAlerts() {
   const t = useT()
@@ -42,7 +26,7 @@ export function ThreatAlerts() {
 
   const columns: ColumnsType<ThreatAlertRecord> = [
     { title: t('threatsColTime'), dataIndex: 'time', render: (v: string) => new Date(v).toLocaleString() },
-    { title: t('threatsColKind'), dataIndex: 'kind', render: (v: AlertKind) => <KindBadge kind={v} /> },
+    { title: t('threatsColKind'), dataIndex: 'kind', render: (v: AlertKind) => <AlertKindBadge kind={v} /> },
     { title: t('threatsColIP'), dataIndex: 'ip', render: (v: string, a) => <AssetLabel label={a.label} value={v} /> },
     {
       title: t('threatsColPeers'),

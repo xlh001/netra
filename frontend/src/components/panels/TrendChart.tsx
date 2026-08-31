@@ -2,20 +2,12 @@ import { useEffect, useRef } from 'react'
 import { Spin } from 'antd'
 import { useT } from '../../i18n/context'
 import { useEchart } from '../../hooks/useEchart'
-import { formatBytes, protoColor } from '../../lib/format'
+import { formatAxisTime, formatBytes, protoColor } from '../../lib/format'
 import type { Timeseries } from '../../api/types'
 
 const chartBaseText = { color: '#8b93a0', fontFamily: 'ui-monospace, "SF Mono", "Cascadia Code", monospace', fontSize: 10.5 }
 
-const DAY_MS = 24 * 3600 * 1000
 const PROTO_TOP_N = 8
-
-function formatAxisTime(ts: number, spanMs: number): string {
-  const d = new Date(ts)
-  if (spanMs <= DAY_MS) return d.toLocaleTimeString('zh-CN', { hour12: false })
-  if (spanMs <= 3 * DAY_MS) return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-}
 
 export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | null; loading?: boolean }) {
   const t = useT()

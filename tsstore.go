@@ -57,9 +57,9 @@ var errFetchTooDeep = errors.New("requested page is too far into the result set 
 var tsTables = []string{tblFlow, tblIP, tblPort}
 
 var tsTableDDL = map[string]string{
-	tblFlow: `CREATE TABLE flow_samples (ts BIGINT, src_ip BIGINT, dst_ip BIGINT, src_port BIGINT, dst_port BIGINT, proto BIGINT, packets BIGINT, bytes BIGINT, domain VARCHAR, dpi_service VARCHAR)`,
+	tblFlow: `CREATE TABLE flow_samples (ts BIGINT, src_ip BIGINT, dst_ip BIGINT, src_port BIGINT, dst_port BIGINT, proto BIGINT, packets BIGINT, bytes BIGINT, domain VARCHAR, dpi_service VARCHAR, svc_port BIGINT)`,
 	tblIP:   `CREATE TABLE ip_samples (ts BIGINT, ip BIGINT, packets BIGINT, bytes BIGINT)`,
-	tblPort: `CREATE TABLE port_samples (ts BIGINT, proto BIGINT, port BIGINT, packets BIGINT, bytes BIGINT)`,
+	tblPort: `CREATE TABLE port_samples (ts BIGINT, proto BIGINT, port BIGINT, packets BIGINT, bytes BIGINT, dpi_service VARCHAR)`,
 }
 
 // tsStore holds the high-volume flow_samples/ip_samples/port_samples
@@ -242,7 +242,7 @@ func computeFlowFileTopK(path string, start, end int64) (flowFileCacheEntry, err
 	defer db.Close()
 
 	source := flowSealedSource([]string{path})
-	q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service)
+	q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service), MAX(svc_port)
 		FROM %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
 		ORDER BY SUM(bytes) DESC LIMIT ?`, source)
 	rows, err := db.Query(q, flowFileCacheCap)
@@ -253,7 +253,8 @@ func computeFlowFileTopK(path string, start, end int64) (flowFileCacheEntry, err
 	for rows.Next() {
 		var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
 		var domain, dpiService sql.NullString
-		if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService); err != nil {
+		var svcPort sql.NullInt64
+		if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService, &svcPort); err != nil {
 			rows.Close()
 			return flowFileCacheEntry{}, err
 		}
@@ -263,7 +264,7 @@ func computeFlowFileTopK(path string, start, end int64) (flowFileCacheEntry, err
 				SrcPort: uint16(srcPort), DstPort: uint16(dstPort),
 				Proto: uint8(proto),
 			},
-			Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String,
+			Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String, SvcPort: uint16(svcPort.Int64),
 		})
 	}
 	rowsErr := rows.Err()
@@ -513,7 +514,7 @@ func (t *tsStore) openFreshHot(periodStart time.Time) error {
 	return nil
 }
 
-func (t *tsStore) writeTick(ts int64, flows []flowSample, ips map[uint32]xdpflowFlowStats, ports map[portKey]xdpflowFlowStats) error {
+func (t *tsStore) writeTick(ts int64, flows []flowSample, ips map[uint32]xdpflowFlowStats, ports map[portKey]xdpflowFlowStats, portDPI map[portKey]string) error {
 	newStart := time.Unix(ts, 0).Truncate(t.period)
 	if newStart.After(t.periodStart) {
 		if err := t.sealAndRotate(newStart); err != nil {
@@ -534,7 +535,11 @@ func (t *tsStore) writeTick(ts int64, flows []flowSample, ips map[uint32]xdpflow
 		if f.dpiService != "" {
 			dpiService = f.dpiService
 		}
-		if err := flowApp.AppendRow(ts, int64(f.key.Saddr), int64(f.key.Daddr), int64(ntohs(f.key.Sport)), int64(ntohs(f.key.Dport)), int64(f.key.Proto), int64(f.packets), int64(f.bytes), domain, dpiService); err != nil {
+		var svcPort any
+		if f.svcPort != 0 {
+			svcPort = int64(ntohs(f.svcPort))
+		}
+		if err := flowApp.AppendRow(ts, int64(f.key.Saddr), int64(f.key.Daddr), int64(ntohs(f.key.Sport)), int64(ntohs(f.key.Dport)), int64(f.key.Proto), int64(f.packets), int64(f.bytes), domain, dpiService, svcPort); err != nil {
 			return fmt.Errorf("append flow_samples: %w", err)
 		}
 	}
@@ -554,7 +559,11 @@ func (t *tsStore) writeTick(ts int64, flows []flowSample, ips map[uint32]xdpflow
 
 	portApp := t.appenders[tblPort]
 	for pk, stat := range ports {
-		if err := portApp.AppendRow(ts, int64(pk.proto), int64(ntohs(pk.port)), int64(stat.Packets), int64(stat.Bytes)); err != nil {
+		var dpiService any
+		if svc := portDPI[pk]; svc != "" {
+			dpiService = svc
+		}
+		if err := portApp.AppendRow(ts, int64(pk.proto), int64(ntohs(pk.port)), int64(stat.Packets), int64(stat.Bytes), dpiService); err != nil {
 			return fmt.Errorf("append port_samples: %w", err)
 		}
 	}
@@ -762,16 +771,8 @@ func (t *tsStore) listSealedFiles(table string, cutoff, until int64) ([]string, 
 	return files, nil
 }
 
-// flowSealedSource builds a read_parquet() source for flow_samples sealed
-// files that stays queryable even when some (or every) file in the batch
-// predates a column added after this table's schema first shipped
-// (currently dpi_service): union_by_name reconciles schemas across files
-// that do have it, and the UNION ALL BY NAME ... WHERE FALSE branch
-// guarantees the column is always part of the projected schema even when
-// no real file in the batch has it yet -- without it, a batch of only
-// old-schema files would fail to bind the column at all.
 func flowSealedSource(files []string) string {
-	return fmt.Sprintf(`(SELECT * FROM read_parquet(%s, union_by_name=true) UNION ALL BY NAME SELECT NULL::BIGINT AS ts, NULL::BIGINT AS src_ip, NULL::BIGINT AS dst_ip, NULL::BIGINT AS src_port, NULL::BIGINT AS dst_port, NULL::BIGINT AS proto, NULL::BIGINT AS packets, NULL::BIGINT AS bytes, NULL::VARCHAR AS domain, NULL::VARCHAR AS dpi_service WHERE FALSE)`, parquetFileList(files))
+	return fmt.Sprintf(`(SELECT * FROM read_parquet(%s, union_by_name=true) UNION ALL BY NAME SELECT NULL::BIGINT AS ts, NULL::BIGINT AS src_ip, NULL::BIGINT AS dst_ip, NULL::BIGINT AS src_port, NULL::BIGINT AS dst_port, NULL::BIGINT AS proto, NULL::BIGINT AS packets, NULL::BIGINT AS bytes, NULL::VARCHAR AS domain, NULL::VARCHAR AS dpi_service, NULL::BIGINT AS svc_port WHERE FALSE)`, parquetFileList(files))
 }
 
 func parquetFileList(files []string) string {
@@ -796,6 +797,12 @@ func parquetFileList(files []string) string {
 // touching historical Parquet files for a window entirely inside the
 // current hot period.
 func querySealedAgg[T any](t *tsStore, table string, buildSQL func(source string) string, cutoff, until int64, scan func(*sql.Rows) ([]T, error)) ([]T, error) {
+	return querySealedAggSource(t, table, func(files []string) string {
+		return "read_parquet(" + parquetFileList(files) + ")"
+	}, buildSQL, cutoff, until, scan)
+}
+
+func querySealedAggSource[T any](t *tsStore, table string, source func(files []string) string, buildSQL func(source string) string, cutoff, until int64, scan func(*sql.Rows) ([]T, error)) ([]T, error) {
 	files, err := t.listSealedFiles(table, cutoff, until)
 	if err != nil {
 		return nil, fmt.Errorf("list sealed files for %s: %w", table, err)
@@ -810,7 +817,7 @@ func querySealedAgg[T any](t *tsStore, table string, buildSQL func(source string
 	}
 	defer scratch.Close()
 
-	rows, err := scratch.Query(buildSQL("read_parquet("+parquetFileList(files)+")"), cutoff, until)
+	rows, err := scratch.Query(buildSQL(source(files)), cutoff, until)
 	if err != nil {
 		return nil, fmt.Errorf("query parquet: %w", err)
 	}
@@ -860,6 +867,7 @@ type flowAggRow struct {
 	Bytes      uint64
 	Domain     string
 	DPIService string
+	SvcPort    uint16
 }
 
 func mergeFlowAgg(a, b []flowAggRow) []flowAggRow {
@@ -874,6 +882,9 @@ func mergeFlowAgg(a, b []flowAggRow) []flowAggRow {
 				}
 				if r.DPIService > existing.DPIService {
 					existing.DPIService = r.DPIService
+				}
+				if existing.SvcPort == 0 && r.SvcPort != 0 {
+					existing.SvcPort = r.SvcPort
 				}
 			} else {
 				cp := r
@@ -893,6 +904,42 @@ func mergeFlowAgg(a, b []flowAggRow) []flowAggRow {
 type tsPortKey struct {
 	Proto uint8
 	Port  uint16
+}
+
+type portAggRow struct {
+	Key        tsPortKey
+	Packets    uint64
+	Bytes      uint64
+	DPIService string
+}
+
+func mergePortAgg(a, b []portAggRow) []portAggRow {
+	acc := map[tsPortKey]*portAggRow{}
+	add := func(rows []portAggRow) {
+		for _, r := range rows {
+			if existing, ok := acc[r.Key]; ok {
+				existing.Packets += r.Packets
+				existing.Bytes += r.Bytes
+				if r.DPIService > existing.DPIService {
+					existing.DPIService = r.DPIService
+				}
+			} else {
+				cp := r
+				acc[r.Key] = &cp
+			}
+		}
+	}
+	add(a)
+	add(b)
+	out := make([]portAggRow, 0, len(acc))
+	for _, v := range acc {
+		out = append(out, *v)
+	}
+	return out
+}
+
+func portSealedSource(files []string) string {
+	return fmt.Sprintf(`(SELECT * FROM read_parquet(%s, union_by_name=true) UNION ALL BY NAME SELECT NULL::BIGINT AS ts, NULL::BIGINT AS proto, NULL::BIGINT AS port, NULL::BIGINT AS packets, NULL::BIGINT AS bytes, NULL::VARCHAR AS dpi_service WHERE FALSE)`, parquetFileList(files))
 }
 
 func (t *tsStore) queryIPs(cutoff, until int64) ([]aggRow[uint32], error) {
@@ -932,24 +979,63 @@ func (t *tsStore) queryIPs(cutoff, until int64) ([]aggRow[uint32], error) {
 	return mergeSimpleAgg(sealed, hot), nil
 }
 
-func (t *tsStore) queryPorts(cutoff, until int64) ([]aggRow[tsPortKey], error) {
+func (t *tsStore) queryIPTimeline(cutoff, until int64, ip uint32) ([]aggRow[int64], error) {
+	where := fmt.Sprintf("ts >= ? AND ts <= ? AND (src_ip = %d OR dst_ip = %d)", ip, ip)
 	buildSQL := func(source string) string {
-		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port`, source)
+		return fmt.Sprintf(`SELECT ts, SUM(packets), SUM(bytes) FROM %s WHERE %s GROUP BY ts`, source, where)
 	}
-	scan := func(rows *sql.Rows) ([]aggRow[tsPortKey], error) {
+	scan := func(rows *sql.Rows) ([]aggRow[int64], error) {
 		defer rows.Close()
-		var out []aggRow[tsPortKey]
+		var out []aggRow[int64]
 		for rows.Next() {
-			var proto, port, packets, bytes int64
-			if err := rows.Scan(&proto, &port, &packets, &bytes); err != nil {
+			var ts, packets, bytes int64
+			if err := rows.Scan(&ts, &packets, &bytes); err != nil {
 				return nil, err
 			}
-			out = append(out, aggRow[tsPortKey]{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes)})
+			out = append(out, aggRow[int64]{Key: ts, Packets: uint64(packets), Bytes: uint64(bytes)})
 		}
 		return out, rows.Err()
 	}
 
-	sealed, err := querySealedAgg(t, tblPort, buildSQL, cutoff, until, scan)
+	sealed, err := querySealedAggSource(t, tblFlow, flowSealedSource, buildSQL, cutoff, until, scan)
+	if err != nil {
+		return nil, fmt.Errorf("query sealed flow_samples timeline: %w", err)
+	}
+
+	t.mu.RLock()
+	hotRows, err := t.hotDB.Query(buildSQL(tblFlow), cutoff, until)
+	if err != nil {
+		t.mu.RUnlock()
+		return nil, fmt.Errorf("query hot flow_samples timeline: %w", err)
+	}
+	hot, err := scan(hotRows)
+	t.mu.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("scan hot flow_samples timeline: %w", err)
+	}
+
+	return mergeSimpleAgg(sealed, hot), nil
+}
+
+func (t *tsStore) queryPorts(cutoff, until int64) ([]portAggRow, error) {
+	buildSQL := func(source string) string {
+		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes), MAX(dpi_service) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port`, source)
+	}
+	scan := func(rows *sql.Rows) ([]portAggRow, error) {
+		defer rows.Close()
+		var out []portAggRow
+		for rows.Next() {
+			var proto, port, packets, bytes int64
+			var dpiService sql.NullString
+			if err := rows.Scan(&proto, &port, &packets, &bytes, &dpiService); err != nil {
+				return nil, err
+			}
+			out = append(out, portAggRow{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes), DPIService: dpiService.String})
+		}
+		return out, rows.Err()
+	}
+
+	sealed, err := querySealedAggSource(t, tblPort, portSealedSource, buildSQL, cutoff, until, scan)
 	if err != nil {
 		return nil, fmt.Errorf("query sealed port_samples: %w", err)
 	}
@@ -966,7 +1052,7 @@ func (t *tsStore) queryPorts(cutoff, until int64) ([]aggRow[tsPortKey], error) {
 		return nil, fmt.Errorf("scan hot port_samples: %w", err)
 	}
 
-	return mergeSimpleAgg(sealed, hot), nil
+	return mergePortAgg(sealed, hot), nil
 }
 
 // The *Limited variants below serve queryTopX (limit=N, offset=0) and
@@ -1008,7 +1094,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		// source ports) that turned an 8s query into 1.6s in testing. The
 		// total, when actually needed, is fetched via its own lightweight
 		// query instead.
-		q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service)
+		q := fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service), MAX(svc_port)
 			FROM %s WHERE %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
 			ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`, tblFlow, where)
 
@@ -1025,7 +1111,8 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		for rows.Next() {
 			var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
 			var domain, dpiService sql.NullString
-			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService); err != nil {
+			var svcPort sql.NullInt64
+			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService, &svcPort); err != nil {
 				rows.Close()
 				return nil, 0, err
 			}
@@ -1035,7 +1122,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 					SrcPort: uint16(srcPort), DstPort: uint16(dstPort),
 					Proto: uint8(proto),
 				},
-				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String,
+				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String, SvcPort: uint16(svcPort.Int64),
 			})
 		}
 		rowsErr := rows.Err()
@@ -1065,7 +1152,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 	slowStart := time.Now()
 
 	buildSQL := func(source string) string {
-		return fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service)
+		return fmt.Sprintf(`SELECT src_ip, src_port, dst_ip, dst_port, proto, SUM(packets), SUM(bytes), MAX(domain), MAX(dpi_service), MAX(svc_port)
 			FROM %s WHERE %s GROUP BY src_ip, src_port, dst_ip, dst_port, proto
 			ORDER BY SUM(bytes) DESC LIMIT ?`, source, where)
 	}
@@ -1075,7 +1162,8 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 		for rows.Next() {
 			var srcIP, srcPort, dstIP, dstPort, proto, packets, bytes int64
 			var domain, dpiService sql.NullString
-			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService); err != nil {
+			var svcPort sql.NullInt64
+			if err := rows.Scan(&srcIP, &srcPort, &dstIP, &dstPort, &proto, &packets, &bytes, &domain, &dpiService, &svcPort); err != nil {
 				return nil, err
 			}
 			out = append(out, flowAggRow{
@@ -1084,7 +1172,7 @@ func (t *tsStore) queryFlowsLimited(cutoff, until int64, ipFilter *uint32, limit
 					SrcPort: uint16(srcPort), DstPort: uint16(dstPort),
 					Proto: uint8(proto),
 				},
-				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String,
+				Packets: uint64(packets), Bytes: uint64(bytes), Domain: domain.String, DPIService: dpiService.String, SvcPort: uint16(svcPort.Int64),
 			})
 		}
 		return out, rows.Err()
@@ -1351,7 +1439,7 @@ func (t *tsStore) queryIPsLimited(cutoff, until int64, limit, offset int, wantTo
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }
 
-func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]aggRow[tsPortKey], int, error) {
+func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, wantTotal bool) ([]portAggRow, int, error) {
 	if limit+offset > maxFetchK {
 		return nil, 0, errFetchTooDeep
 	}
@@ -1367,19 +1455,20 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 	if len(files) == 0 {
 		t.mu.RLock()
 		defer t.mu.RUnlock()
-		rows, err := t.hotDB.Query(`SELECT proto, port, SUM(packets), SUM(bytes) FROM port_samples
+		rows, err := t.hotDB.Query(`SELECT proto, port, SUM(packets), SUM(bytes), MAX(dpi_service) FROM port_samples
 			WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ? OFFSET ?`, cutoff, until, limit, offset)
 		if err != nil {
 			return nil, 0, fmt.Errorf("query hot port_samples: %w", err)
 		}
-		var out []aggRow[tsPortKey]
+		var out []portAggRow
 		for rows.Next() {
 			var proto, port, packets, bytes int64
-			if err := rows.Scan(&proto, &port, &packets, &bytes); err != nil {
+			var dpiService sql.NullString
+			if err := rows.Scan(&proto, &port, &packets, &bytes, &dpiService); err != nil {
 				rows.Close()
 				return nil, 0, err
 			}
-			out = append(out, aggRow[tsPortKey]{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes)})
+			out = append(out, portAggRow{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes), DPIService: dpiService.String})
 		}
 		rowsErr := rows.Err()
 		rows.Close()
@@ -1396,17 +1485,18 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 	}
 
 	buildSQL := func(source string) string {
-		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ?`, source)
+		return fmt.Sprintf(`SELECT proto, port, SUM(packets), SUM(bytes), MAX(dpi_service) FROM %s WHERE ts >= ? AND ts <= ? GROUP BY proto, port ORDER BY SUM(bytes) DESC LIMIT ?`, source)
 	}
-	scan := func(rows *sql.Rows) ([]aggRow[tsPortKey], error) {
+	scan := func(rows *sql.Rows) ([]portAggRow, error) {
 		defer rows.Close()
-		var out []aggRow[tsPortKey]
+		var out []portAggRow
 		for rows.Next() {
 			var proto, port, packets, bytes int64
-			if err := rows.Scan(&proto, &port, &packets, &bytes); err != nil {
+			var dpiService sql.NullString
+			if err := rows.Scan(&proto, &port, &packets, &bytes, &dpiService); err != nil {
 				return nil, err
 			}
-			out = append(out, aggRow[tsPortKey]{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes)})
+			out = append(out, portAggRow{Key: tsPortKey{Proto: uint8(proto), Port: uint16(port)}, Packets: uint64(packets), Bytes: uint64(bytes), DPIService: dpiService.String})
 		}
 		return out, rows.Err()
 	}
@@ -1417,7 +1507,7 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 	if err != nil {
 		return nil, 0, fmt.Errorf("open scratch duckdb: %w", err)
 	}
-	sealedSource := "read_parquet(" + parquetFileList(files) + ")"
+	sealedSource := portSealedSource(files)
 	sealedRowsSQL, err := scratch.Query(buildSQL(sealedSource), cutoff, until, fetchK)
 	if err != nil {
 		scratch.Close()
@@ -1499,7 +1589,7 @@ func (t *tsStore) queryPortsLimited(cutoff, until int64, limit, offset int, want
 		t.mu.RUnlock()
 	}
 
-	merged := mergeSimpleAgg(sealedRows, hotRows)
+	merged := mergePortAgg(sealedRows, hotRows)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].Bytes > merged[j].Bytes })
 	return limitOffsetSlice(merged, limit, offset), total, nil
 }

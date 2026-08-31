@@ -119,14 +119,24 @@ func serviceName(port uint16) string {
 	return ianaPortNames[port]
 }
 
-// resolveService prefers a DPI content match over the port table -- DPI
-// looked at what's actually on the wire, so it's trusted over guessing from
-// the port number alone.
 func resolveService(dport uint16, dpiService string) (service string, dpi bool) {
 	if dpiService != "" {
 		return dpiService, true
 	}
 	return serviceName(dport), false
+}
+
+func effectivePort(svcPort, dport uint16) uint16 {
+	if svcPort != 0 {
+		return svcPort
+	}
+	return dport
+}
+
+func resolveServiceForFlow(srcPort, dstPort, svcPort uint16, dpiService string) (service string, dpi bool, svcOnSrc bool) {
+	service, dpi = resolveService(effectivePort(svcPort, dstPort), dpiService)
+	svcOnSrc = svcPort != 0 && svcPort == srcPort
+	return
 }
 
 var serviceCategories = map[string]string{

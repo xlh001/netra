@@ -17,6 +17,7 @@ export interface FlowStat {
   proto: string
   service?: string
   dpi?: boolean
+  svcOnSrc?: boolean
   domain?: string
   packets: number
   bytes: number
@@ -35,6 +36,7 @@ export interface PortStat {
   port: number
   proto: string
   service?: string
+  dpi?: boolean
   packets: number
   bytes: number
 }
@@ -182,6 +184,43 @@ export interface ThreatAlertsPagedResponse {
   total: number
   page: number
   alerts: ThreatAlertRecord[]
+}
+
+export interface IPProfilePeer {
+  peer: string
+  bytes: number
+}
+
+export interface IPProfileService {
+  service: string
+  dpi?: boolean
+  bytes: number
+}
+
+export interface IPProfileTrendPoint {
+  time: string
+  bytes: number
+  packets: number
+}
+
+export interface IPProfile {
+  ip: string
+  label?: string
+  country?: string
+  org?: string
+  firstSeen?: number
+  lastSeen?: number
+  totalBytes: number
+  totalPackets: number
+  peerCount: number
+  initiatorBytes: number
+  receiverBytes: number
+  topPeers: IPProfilePeer[]
+  topServices: IPProfileService[]
+  totalServiceCount: number
+  trend: IPProfileTrendPoint[]
+  alerts: ThreatAlertRecord[]
+  totalAlertCount: number
 }
 
 export interface ConfigDTO {

@@ -8,6 +8,7 @@ import type {
   FlowRate,
   FlowsPagedResponse,
   GeoReport,
+  IPProfile,
   IPsPagedResponse,
   IPTagKind,
   IPTagRecord,
@@ -139,6 +140,10 @@ export function getServiceCategoriesWindow(window: Window): Promise<ServiceCateg
 
 export function getThreatAlertsPaged(page: number, pageSize: number, q?: string, kind?: AlertKind | ''): Promise<ThreatAlertsPagedResponse> {
   return getJSON<ThreatAlertsPagedResponse>('/api/admin/threat-alerts', { page, pageSize, q: q || undefined, kind: kind || undefined })
+}
+
+export function getIPProfile(range: TimeRange, ip: string): Promise<IPProfile> {
+  return getJSON<IPProfile>('/api/admin/ip-profile', { ...rangeParams(range), ip })
 }
 
 export function getConfig(): Promise<ConfigDTO> {

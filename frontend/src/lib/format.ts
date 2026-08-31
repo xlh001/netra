@@ -39,6 +39,15 @@ export function rangeToSeconds(range: { kind: 'window'; window: string } | { kin
   return range.kind === 'custom' ? Math.max(1, range.to - range.from) : windowToSeconds(range.window)
 }
 
+const DAY_MS = 24 * 3600 * 1000
+
+export function formatAxisTime(ts: number, spanMs: number): string {
+  const d = new Date(ts)
+  if (spanMs <= DAY_MS) return d.toLocaleTimeString('zh-CN', { hour12: false })
+  if (spanMs <= 3 * DAY_MS) return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+}
+
 const OTHER_PROTO_PALETTE = [
   '#ff5d7a', '#2ee6a8', '#f472b6', '#4fd1c5', '#e8c869',
   '#c874ff', '#6ea8ff', '#7fdcae', '#ff9e6d', '#8a7355',

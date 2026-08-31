@@ -63,6 +63,16 @@ export const STRINGS = {
   flowsPageTitle: '流量详情', flowsFilterIPPlaceholder: '按IP筛选（源或目的）', flowsFilterApply: '筛选', protoShareTitle: '协议占比',
   tabFlows: '五元组流量', tabIPs: 'IP流量', tabPorts: '端口流量', tabDomains: '域名流量', tabCategories: '服务分类', colIP: 'IP', colPort: '端口', colCategory: '类别 / 服务',
   ipsFilterPlaceholder: '按IP模糊查询', portsFilterPlaceholder: '按端口/服务模糊查询', domainsFilterPlaceholder: '按域名模糊查询',
+
+  ipProfileButton: 'IP 画像', ipProfilePlaceholder: '输入 IP 查看画像', ipProfileTitle: 'IP 流量画像',
+  ipProfileInternal: '内网', ipProfileFirstSeen: '首次出现', ipProfileLastSeen: '最后活跃',
+  ipProfileTotalBytes: '总流量', ipProfileTotalPackets: '总包数', ipProfilePeerCount: '通信对象',
+  ipProfileRoleSplit: '发起方 / 接收方', ipProfileInitiator: '发起', ipProfileReceiver: '接收',
+  ipProfileTrend: '流量趋势',
+  ipProfilePeers: '通信对象（Top {n} · 共 {total} 个）', ipProfileServices: '协议 / 服务分布（Top {n} · 共 {total} 种）',
+  ipProfileAlerts: '历史告警（Top {n} · 共 {total} 条）', ipProfileNoAlerts: '该 IP 暂无历史告警', ipProfileLoadFailed: '画像加载失败: ',
+  ipProfileUnit: '个',
+  ipProfileWindow1h: '最近1小时', ipProfileWindow6h: '最近6小时', ipProfileWindow1d: '最近1天', ipProfileWindow7d: '最近1周',
   pagePrev: '上一页', pageNext: '下一页', pageInfo: '第 {page} 页 · 共 {total} 条',
   tableTotal: '共 {total} 条',
 
