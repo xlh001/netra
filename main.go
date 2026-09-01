@@ -197,6 +197,7 @@ func main() {
 	applyCapacityConfig(agg, cfg)
 
 	ipTags := newIPTagCache()
+	iocList := newIOCCache()
 
 	kafkaExp := newKafkaExporter(geoDB, ipTags)
 	defer kafkaExp.Close()
@@ -209,6 +210,11 @@ func main() {
 			log.Printf("load ip tags: %v", err)
 		} else {
 			ipTags.rebuild(saved)
+		}
+		if savedIOC, err := store.ListIOCEntries(); err != nil {
+			log.Printf("load ioc entries: %v", err)
+		} else {
+			iocList.rebuild(savedIOC)
 		}
 		if savedMCP, err := store.ListMCPServers(); err != nil {
 			log.Printf("load mcp servers: %v", err)
@@ -231,7 +237,7 @@ func main() {
 		}
 		mon := newMonitor(*dbPath, store, ifaceConfigs, *generic)
 		go mon.run()
-		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, mcpMgr)
+		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, iocList, mcpMgr)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -259,7 +265,7 @@ func main() {
 				}
 				snap := agg.push(now, cur, prev)
 				agg.recordAnomalyCandidates(now, cur, prev)
-				alerts := agg.threatAlerts()
+				alerts := append(agg.threatAlerts(), agg.recordIOCCandidates(now, cur, iocList)...)
 				if cfg.Snapshot().PersistScanAlerts {
 
 					snap.scanAlerts = alerts

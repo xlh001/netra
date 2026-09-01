@@ -5,10 +5,11 @@ import { useT } from '../i18n/context'
 import type { AlertKind } from '../api/types'
 import { categoryColor, protoColor, readableTextColor, serviceColor } from './format'
 
-const ALERT_KIND_LABEL_KEY: Record<AlertKind, 'threatsKindScan' | 'threatsKindDDoS' | 'threatsKindVolume'> = {
+const ALERT_KIND_LABEL_KEY: Record<AlertKind, 'threatsKindScan' | 'threatsKindDDoS' | 'threatsKindVolume' | 'threatsKindIOC'> = {
   scan: 'threatsKindScan',
   ddos: 'threatsKindDDoS',
   volume: 'threatsKindVolume',
+  ioc: 'threatsKindIOC',
 }
 
 export function AlertKindBadge({ kind }: { kind: AlertKind }) {

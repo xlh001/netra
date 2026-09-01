@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,9 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 	var toSend []ThreatAlert
 	for _, a := range alerts {
 		key := string(a.Kind) + ":" + a.IP
+		if a.Kind == AlertKindIOC {
+			key += ":" + a.PeerIP
+		}
 		if last, ok := lastNotifiedAt[key]; !ok || now.Sub(last) >= notifyCooldown {
 			lastNotifiedAt[key] = now
 			toSend = append(toSend, a)
@@ -51,14 +55,47 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 		return
 	}
 
+	iocGroups := map[string][]ThreatAlert{}
+	var dispatch []ThreatAlert
+	for _, a := range toSend {
+		if a.Kind == AlertKindIOC {
+			iocGroups[a.IP] = append(iocGroups[a.IP], a)
+			continue
+		}
+		dispatch = append(dispatch, a)
+	}
+	for ip, group := range iocGroups {
+		if len(group) == 1 {
+			dispatch = append(dispatch, group[0])
+			continue
+		}
+		sort.Slice(group, func(i, j int) bool { return group[i].VolumeBytes > group[j].VolumeBytes })
+		var peerList strings.Builder
+		var totalBytes uint64
+		for i, g := range group {
+			if i > 0 {
+				peerList.WriteByte('\n')
+			}
+			fmt.Fprintf(&peerList, "- %s（%s）", g.PeerIP, formatBytesCN(g.VolumeBytes))
+			totalBytes += g.VolumeBytes
+		}
+		dispatch = append(dispatch, ThreatAlert{
+			Kind: AlertKindIOC, IP: ip, Label: group[0].Label,
+			DistinctPeers: len(group), VolumeBytes: totalBytes,
+			PeerList: peerList.String(),
+		})
+	}
+
 	webhooks, err := store.ListEnabledWebhooks()
 	if err != nil {
 		log.Printf("webhooks: list enabled webhooks failed: %v", err)
 		return
 	}
-	for _, a := range toSend {
+	for _, a := range dispatch {
 		alert := a
-		alert.Label = resolveIPTag(ipTags, alert.IP)
+		if alert.Kind != AlertKindIOC {
+			alert.Label = resolveIPTag(ipTags, alert.IP)
+		}
 
 		go func() {
 			summary := ""
@@ -99,14 +136,22 @@ func alertKindLabel(kind AlertKind) string {
 		return "疑似DDoS/流量异常"
 	case AlertKindVolume:
 		return "单IP大流量"
+	case AlertKindIOC:
+		return "IOC命中"
 	default:
 		return "端口/主机扫描"
 	}
 }
 
 func alertDetailLine(a ThreatAlert) string {
-	if a.Kind == AlertKindVolume {
+	switch a.Kind {
+	case AlertKindVolume:
 		return fmt.Sprintf("**流量总量**：%s", formatBytesCN(a.VolumeBytes))
+	case AlertKindIOC:
+		if a.PeerList != "" {
+			return fmt.Sprintf("**命中名单**：%s\n**涉及内网主机（%d 个）**：\n%s", a.Label, a.DistinctPeers, a.PeerList)
+		}
+		return fmt.Sprintf("**命中名单**：%s\n**对端IP**：%s\n**本次流量**：%s", a.Label, a.PeerIP, formatBytesCN(a.VolumeBytes))
 	}
 	label := "涉及目标数"
 	if a.Kind == AlertKindDDoS {

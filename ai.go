@@ -57,7 +57,8 @@ type toolFunction struct {
 
 type chatCompletionResponse struct {
 	Choices []struct {
-		Message chatCompletionMessage `json:"message"`
+		Message      chatCompletionMessage `json:"message"`
+		FinishReason *string               `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -130,11 +131,15 @@ func summarizeAlertForNotify(cfg ConfigDTO, a ThreatAlert, ts time.Time) (string
 		"以下是Netra刚触发的一条威胁感知告警的原始字段。用不超过2句话的中文说明这条告警可能意味着什么、以及建议的下一步排查动作。不要使用markdown格式，不要逐字复述下面的字段。\n类型：%s\nIP：%s\n%s\n时间：%s",
 		alertKindLabel(a.Kind), formatIPLabel(a.IP, a.Label), alertDetailLine(a), ts.Format("2006-01-02 15:04:05"),
 	)
-	resp, err := chatCompletionOnce(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, []chatCompletionMessage{{Role: "user", Content: prompt}}, 200)
+	resp, err := chatCompletionOnce(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, []chatCompletionMessage{{Role: "user", Content: prompt}}, 0)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+	choice := resp.Choices[0]
+	if choice.FinishReason != nil && *choice.FinishReason == "length" {
+		return "", fmt.Errorf("AI response truncated by max_tokens")
+	}
+	return strings.TrimSpace(choice.Message.Content), nil
 }
 
 const maxConcurrentAlertSummaries = 8
@@ -232,7 +237,7 @@ func buildChatTools(mcpMgr *mcpManager) []toolSpec {
 	return tools
 }
 
-func executeToolCall(ctx context.Context, store *Store, ipTags *ipTagCache, mcpMgr *mcpManager, name, argsJSON string) (string, error) {
+func executeToolCall(ctx context.Context, store *Store, ipTags *ipTagCache, iocList *iocCache, mcpMgr *mcpManager, name, argsJSON string) (string, error) {
 	if mcpMgr != nil && mcpMgr.isMCPTool(name) {
 		return mcpMgr.callTool(ctx, name, argsJSON)
 	}
@@ -284,13 +289,14 @@ func executeToolCall(ctx context.Context, store *Store, ipTags *ipTagCache, mcpM
 			return "", err
 		}
 		annotateIPTagsAlerts(ipTags, alerts)
+		annotateIOCAlerts(iocList, alerts)
 		b, err := json.Marshal(struct {
 			Total  int                 `json:"total"`
 			Alerts []ThreatAlertRecord `json:"alerts"`
 		}{total, alerts})
 		return string(b), err
 	case "get_flows":
-		flows, total, err := store.QueryFlowsPaged(from, to, 0, toolResultLimit, FlowFilter{IP: args.IP})
+		flows, total, err := store.QueryFlowsPaged(from, to, 0, toolResultLimit, FlowFilter{Q: args.IP})
 		if err != nil {
 			return "", err
 		}
@@ -337,7 +343,7 @@ const maxToolRounds = 4
 
 var chatStreamHTTPClient = &http.Client{}
 
-func runChatTurn(ctx context.Context, cfg ConfigDTO, store *Store, ipTags *ipTagCache, mcpMgr *mcpManager, messages []chatCompletionMessage, sink chatEventSink) (finalText string, toolsUsed []string, promptTokens, completionTokens int, err error) {
+func runChatTurn(ctx context.Context, cfg ConfigDTO, store *Store, ipTags *ipTagCache, iocList *iocCache, mcpMgr *mcpManager, messages []chatCompletionMessage, sink chatEventSink) (finalText string, toolsUsed []string, promptTokens, completionTokens int, err error) {
 	tools := buildChatTools(mcpMgr)
 	for round := 0; round < maxToolRounds; round++ {
 		roundStart := time.Now()
@@ -359,7 +365,7 @@ func runChatTurn(ctx context.Context, cfg ConfigDTO, store *Store, ipTags *ipTag
 			sink(chatEventToolCall, map[string]string{"name": c.Function.Name})
 			toolsUsed = append(toolsUsed, c.Function.Name)
 			toolStart := time.Now()
-			result, toolErr := executeToolCall(ctx, store, ipTags, mcpMgr, c.Function.Name, c.Function.Arguments)
+			result, toolErr := executeToolCall(ctx, store, ipTags, iocList, mcpMgr, c.Function.Name, c.Function.Arguments)
 			log.Printf("ai chat: round %d tool %q took %v", round, c.Function.Name, time.Since(toolStart))
 			if toolErr != nil {
 				result = fmt.Sprintf(`{"error": %q}`, toolErr.Error())

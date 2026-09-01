@@ -59,6 +59,7 @@ type aggregator struct {
 	scanDests        map[uint32]map[uint32]scanDestEntry
 	ddosSrcs         map[uint32]map[uint32]scanDestEntry
 	volumeTotals     map[uint32][]volumeSample
+	lastIOCAlertAt   map[iocPairKey]time.Time
 
 	anomalyEnabled             bool
 	anomalyWindow              time.Duration
@@ -112,6 +113,7 @@ func newAggregator(interval time.Duration) *aggregator {
 		scanDests:                  map[uint32]map[uint32]scanDestEntry{},
 		ddosSrcs:                   map[uint32]map[uint32]scanDestEntry{},
 		volumeTotals:               map[uint32][]volumeSample{},
+		lastIOCAlertAt:             map[iocPairKey]time.Time{},
 		anomalyWindow:              defaultAnomalyWindow,
 		anomalyPeerThreshold:       defaultAnomalyPeerThreshold,
 		anomalyAvgPacketsThreshold: defaultAnomalyAvgPacketsThreshold,
@@ -259,7 +261,65 @@ const (
 	AlertKindScan   AlertKind = "scan"
 	AlertKindDDoS   AlertKind = "ddos"
 	AlertKindVolume AlertKind = "volume"
+	AlertKindIOC    AlertKind = "ioc"
 )
+
+const iocAlertCooldown = 15 * time.Minute
+
+type iocPairKey struct {
+	flaggedIP uint32
+	peerIP    uint32
+}
+
+func (a *aggregator) recordIOCCandidates(now time.Time, cur map[xdpflowFlowKey]xdpflowFlowStats, ioc *iocCache) []ThreatAlert {
+	if ioc == nil {
+		return nil
+	}
+
+	type iocHit struct {
+		label string
+		bytes uint64
+	}
+	hits := map[iocPairKey]iocHit{}
+	consider := func(flaggedIP, peerIP uint32, bytes uint64) {
+		label := ioc.lookup(flaggedIP)
+		if label == "" {
+			return
+		}
+		key := iocPairKey{flaggedIP: flaggedIP, peerIP: peerIP}
+		if existing, ok := hits[key]; !ok || bytes > existing.bytes {
+			hits[key] = iocHit{label: label, bytes: bytes}
+		}
+	}
+	for k, s := range cur {
+		consider(k.Saddr, k.Daddr, s.Bytes)
+		consider(k.Daddr, k.Saddr, s.Bytes)
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var alerts []ThreatAlert
+	for key, h := range hits {
+		if last, ok := a.lastIOCAlertAt[key]; ok && now.Sub(last) < iocAlertCooldown {
+			continue
+		}
+		a.lastIOCAlertAt[key] = now
+		alerts = append(alerts, ThreatAlert{Kind: AlertKindIOC, IP: ipString(key.flaggedIP), Label: h.label, PeerIP: ipString(key.peerIP), VolumeBytes: h.bytes})
+	}
+
+	cutoff := now.Add(-2 * iocAlertCooldown)
+	for key, last := range a.lastIOCAlertAt {
+		if last.Before(cutoff) {
+			delete(a.lastIOCAlertAt, key)
+		}
+	}
+
+	return alerts
+}
 
 type ThreatAlert struct {
 	Kind          AlertKind `json:"kind"`
@@ -267,6 +327,8 @@ type ThreatAlert struct {
 	Label         string    `json:"label,omitempty"`
 	DistinctPeers int       `json:"distinctPeers,omitempty"`
 	VolumeBytes   uint64    `json:"volumeBytes,omitempty"`
+	PeerIP        string    `json:"peerIP,omitempty"`
+	PeerList      string    `json:"peerList,omitempty"`
 }
 
 func (a *aggregator) threatAlerts() []ThreatAlert {
@@ -601,17 +663,17 @@ type IPProfileTrendPoint struct {
 }
 
 type IPProfile struct {
-	IP             string                `json:"ip"`
-	Label          string                `json:"label,omitempty"`
-	Country        string                `json:"country,omitempty"`
-	Org            string                `json:"org,omitempty"`
-	FirstSeen      int64                 `json:"firstSeen,omitempty"`
-	LastSeen       int64                 `json:"lastSeen,omitempty"`
-	TotalBytes     uint64                `json:"totalBytes"`
-	TotalPackets   uint64                `json:"totalPackets"`
-	PeerCount      int                   `json:"peerCount"`
-	InitiatorBytes uint64                `json:"initiatorBytes"`
-	ReceiverBytes  uint64                `json:"receiverBytes"`
+	IP                string                `json:"ip"`
+	Label             string                `json:"label,omitempty"`
+	Country           string                `json:"country,omitempty"`
+	Org               string                `json:"org,omitempty"`
+	FirstSeen         int64                 `json:"firstSeen,omitempty"`
+	LastSeen          int64                 `json:"lastSeen,omitempty"`
+	TotalBytes        uint64                `json:"totalBytes"`
+	TotalPackets      uint64                `json:"totalPackets"`
+	PeerCount         int                   `json:"peerCount"`
+	InitiatorBytes    uint64                `json:"initiatorBytes"`
+	ReceiverBytes     uint64                `json:"receiverBytes"`
 	TopPeers          []IPProfilePeer       `json:"topPeers"`
 	TopServices       []IPProfileService    `json:"topServices"`
 	TotalServiceCount int                   `json:"totalServiceCount"`

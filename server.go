@@ -63,7 +63,7 @@ func spaHandler(fsys fs.FS) http.Handler {
 	})
 }
 
-func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *geoip2.Reader, store *Store, cfg *Config, kafkaExp *kafkaExporter, secret []byte, mon *monitor, ipTags *ipTagCache, mcpMgr *mcpManager) {
+func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *geoip2.Reader, store *Store, cfg *Config, kafkaExp *kafkaExporter, secret []byte, mon *monitor, ipTags *ipTagCache, iocList *iocCache, mcpMgr *mcpManager) {
 	sub, err := fs.Sub(webAssets, "web")
 	if err != nil {
 		log.Fatalf("embed web assets: %v", err)
@@ -189,7 +189,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		flows, total, err := store.QueryFlowsPaged(from, to, page, pageSize, FlowFilter{IP: r.URL.Query().Get("ip")})
+		flows, total, err := store.QueryFlowsPaged(from, to, page, pageSize, FlowFilter{Q: r.URL.Query().Get("q"), DPIOnly: r.URL.Query().Get("dpi") == "1"})
 		if err != nil {
 			writeStoreQueryError(w, err)
 			return
@@ -222,6 +222,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		profile.Country = resolveCountry(geoDB, ip)
 		profile.Org = resolveOrg(asnDB, ip)
 		annotateIPTagsAlerts(ipTags, profile.Alerts)
+		annotateIOCAlerts(iocList, profile.Alerts)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(profile)
 	})))
@@ -260,7 +261,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		ports, total, err := store.QueryPortsPaged(from, to, page, pageSize, r.URL.Query().Get("q"))
+		ports, total, err := store.QueryPortsPaged(from, to, page, pageSize, r.URL.Query().Get("q"), r.URL.Query().Get("dpi") == "1")
 		if err != nil {
 			writeStoreQueryError(w, err)
 			return
@@ -323,6 +324,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			return
 		}
 		annotateIPTagsAlerts(ipTags, alerts)
+		annotateIOCAlerts(iocList, alerts)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(struct {
 			Total  int                 `json:"total"`
@@ -533,7 +535,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}
 
 		turnStart := time.Now()
-		finalText, toolsUsed, promptTokens, completionTokens, err := runChatTurn(r.Context(), snap, store, ipTags, mcpMgr, messages, sink)
+		finalText, toolsUsed, promptTokens, completionTokens, err := runChatTurn(r.Context(), snap, store, ipTags, iocList, mcpMgr, messages, sink)
 		elapsedMs := time.Since(turnStart).Milliseconds()
 		if err != nil {
 			sink("error", map[string]string{"message": err.Error()})
@@ -764,6 +766,142 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			ipTags.rebuild(all)
 		}
 		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.Handle("GET /api/admin/ioc", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		page, pageSize, err := parsePaging(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		entries, total, err := store.QueryIOCEntries(page, pageSize, r.URL.Query().Get("q"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Total   int              `json:"total"`
+			Page    int              `json:"page"`
+			Entries []IOCEntryRecord `json:"entries"`
+		}{total, page, entries})
+	}))
+	mux.Handle("POST /api/admin/ioc", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Kind  string `json:"kind"`
+			Value string `json:"value"`
+			Label string `json:"label"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Kind != "ip" && body.Kind != "cidr" {
+			http.Error(w, "kind must be ip or cidr", http.StatusBadRequest)
+			return
+		}
+		if body.Label == "" {
+			http.Error(w, "label is required", http.StatusBadRequest)
+			return
+		}
+		if body.Kind == "ip" {
+			if _, err := ipToUint32(body.Value); err != nil {
+				http.Error(w, "invalid ip: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		} else if _, _, err := net.ParseCIDR(body.Value); err != nil {
+			http.Error(w, "invalid cidr: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		entry, err := store.CreateIOCEntry(body.Kind, body.Value, body.Label)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListIOCEntries(); err == nil {
+			iocList.rebuild(all)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entry)
+	}))
+	mux.Handle("PUT /api/admin/ioc/{id}", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Label string `json:"label"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Label == "" {
+			http.Error(w, "label is required", http.StatusBadRequest)
+			return
+		}
+		entry, err := store.UpdateIOCEntry(id, body.Label)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListIOCEntries(); err == nil {
+			iocList.rebuild(all)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entry)
+	}))
+	mux.Handle("DELETE /api/admin/ioc/{id}", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := store.DeleteIOCEntry(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListIOCEntries(); err == nil {
+			iocList.rebuild(all)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.Handle("GET /api/admin/ioc/template", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		data, err := buildIOCTemplateXLSX()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", `attachment; filename="ioc_template.xlsx"`)
+		w.Write(data)
+	}))
+	mux.Handle("POST /api/admin/ioc/import", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "missing file: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		entries, err := parseIOCXLSX(file, header.Size)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		n, err := store.BulkImportIOCEntries(entries)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListIOCEntries(); err == nil {
+			iocList.rebuild(all)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Imported int `json:"imported"`
+		}{n})
 	}))
 
 	mux.Handle("GET /api/admin/mcp-servers", adminOnly(func(w http.ResponseWriter, r *http.Request) {

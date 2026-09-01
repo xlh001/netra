@@ -60,7 +60,7 @@ export interface CategoryStat {
   services: ServiceStat[]
 }
 
-export type AlertKind = 'scan' | 'ddos' | 'volume'
+export type AlertKind = 'scan' | 'ddos' | 'volume' | 'ioc'
 
 export interface ThreatAlert {
   kind: AlertKind
@@ -296,6 +296,19 @@ export interface IPTagsPagedResponse {
   total: number
   page: number
   tags: IPTagRecord[]
+}
+
+export interface IOCEntryRecord {
+  id: number
+  kind: IPTagKind
+  value: string
+  label: string
+}
+
+export interface IOCEntriesPagedResponse {
+  total: number
+  page: number
+  entries: IOCEntryRecord[]
 }
 
 export type MCPServerTransport = 'http' | 'stdio'

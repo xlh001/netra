@@ -66,6 +66,7 @@ export function ThreatAlerts() {
               { value: 'scan', label: t('threatsKindScan') },
               { value: 'ddos', label: t('threatsKindDDoS') },
               { value: 'volume', label: t('threatsKindVolume') },
+              { value: 'ioc', label: t('threatsKindIOC') },
             ]}
           />
         </Space>

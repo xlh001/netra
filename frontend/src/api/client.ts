@@ -8,6 +8,8 @@ import type {
   FlowRate,
   FlowsPagedResponse,
   GeoReport,
+  IOCEntriesPagedResponse,
+  IOCEntryRecord,
   IPProfile,
   IPsPagedResponse,
   IPTagKind,
@@ -114,16 +116,16 @@ function absoluteRangeParams(range: TimeRange): Record<string, string | number> 
   return { from: now - windowToSeconds(range.window), to: now }
 }
 
-export function getFlowsPaged(range: TimeRange, page: number, pageSize: number, ip?: string): Promise<FlowsPagedResponse> {
-  return getJSON<FlowsPagedResponse>('/api/admin/flows', { ...rangeParams(range), page, pageSize, ip: ip || undefined })
+export function getFlowsPaged(range: TimeRange, page: number, pageSize: number, q?: string, dpiOnly?: boolean): Promise<FlowsPagedResponse> {
+  return getJSON<FlowsPagedResponse>('/api/admin/flows', { ...rangeParams(range), page, pageSize, q: q || undefined, dpi: dpiOnly ? 1 : undefined })
 }
 
 export function getIPsPaged(range: TimeRange, page: number, pageSize: number, q?: string): Promise<IPsPagedResponse> {
   return getJSON<IPsPagedResponse>('/api/admin/ips', { ...rangeParams(range), page, pageSize, q: q || undefined })
 }
 
-export function getPortsPaged(range: TimeRange, page: number, pageSize: number, q?: string): Promise<PortsPagedResponse> {
-  return getJSON<PortsPagedResponse>('/api/admin/ports', { ...rangeParams(range), page, pageSize, q: q || undefined })
+export function getPortsPaged(range: TimeRange, page: number, pageSize: number, q?: string, dpiOnly?: boolean): Promise<PortsPagedResponse> {
+  return getJSON<PortsPagedResponse>('/api/admin/ports', { ...rangeParams(range), page, pageSize, q: q || undefined, dpi: dpiOnly ? 1 : undefined })
 }
 
 export function getDomainsPaged(range: TimeRange, page: number, pageSize: number, q?: string): Promise<DomainsPagedResponse> {
@@ -307,6 +309,39 @@ export function updateIPTag(id: number, label: string): Promise<IPTagRecord> {
 
 export function deleteIPTag(id: number): Promise<void> {
   return sendJSON<void>(`/api/admin/ip-tags/${id}`, 'DELETE')
+}
+
+export function getIOCEntriesPaged(page: number, pageSize: number, q?: string): Promise<IOCEntriesPagedResponse> {
+  return getJSON<IOCEntriesPagedResponse>('/api/admin/ioc', { page, pageSize, q: q || undefined })
+}
+
+export function createIOCEntry(kind: IPTagKind, value: string, label: string): Promise<IOCEntryRecord> {
+  return sendJSON<IOCEntryRecord>('/api/admin/ioc', 'POST', { kind, value, label })
+}
+
+export function updateIOCEntry(id: number, label: string): Promise<IOCEntryRecord> {
+  return sendJSON<IOCEntryRecord>(`/api/admin/ioc/${id}`, 'PUT', { label })
+}
+
+export function deleteIOCEntry(id: number): Promise<void> {
+  return sendJSON<void>(`/api/admin/ioc/${id}`, 'DELETE')
+}
+
+export function iocTemplateURL(): string {
+  return '/api/admin/ioc/template'
+}
+
+export async function importIOCEntriesFile(file: File): Promise<{ imported: number }> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch('/api/admin/ioc/import', { method: 'POST', body: form })
+  if (res.status === 401) {
+    notifyUnauthorized()
+  }
+  if (!res.ok) {
+    throw new Error(`import ioc failed: ${res.status} ${await res.text()}`)
+  }
+  return res.json() as Promise<{ imported: number }>
 }
 
 export function listMCPServers(): Promise<MCPServerRecord[]> {

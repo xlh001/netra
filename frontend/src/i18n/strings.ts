@@ -41,6 +41,18 @@ export const STRINGS = {
   ipTagsSectionDesc: '给内部关注的 IP 或网段打上业务标签（如"核心数据库""财务系统"），会显示在流量明细、IP 排名、威胁告警和拓扑图里，方便一眼识别地址归属。',
   ipTagsSearchPlaceholder: '按 IP/网段或标签模糊查询',
   settingsSectionIPTags: '资产标签',
+
+  iocColKind: '类型', iocColValue: '值', iocColLabel: '备注', iocColActions: '操作',
+  iocKindIP: 'IP', iocKindCIDR: '网段', iocCreateButton: '新建', iocEditButton: '编辑', iocDeleteButton: '删除',
+  iocDeleteConfirm: '确认删除 {value}？', iocSave: '保存', iocCancel: '取消',
+  iocCreateTitle: '新建 IOC', iocEditTitle: '编辑 IOC', iocActionFailed: '操作失败: ',
+  iocValueHint: '单个 IP 如 203.0.113.10，网段如 203.0.113.0/24', iocLabelPlaceholder: '例如：已知C2服务器',
+  iocSectionDesc: '手动维护一份需要重点关注的 IP/网段名单，流量涉及名单里的地址会立即触发一条独立的威胁告警（不依赖扫描/DDoS/大流量这些行为阈值），可以推送到企业微信/钉钉/飞书。',
+  iocSearchPlaceholder: '按 IP/网段或备注模糊查询',
+  iocImportButton: '批量导入', iocImportTitle: 'IOC 批量导入', iocDownloadTemplate: '下载导入模版（.xlsx）',
+  iocImportHint: '按模版格式填写：第一列为 IP 或网段，第二列为备注（可留空），第一行是表头会被跳过。',
+  iocImportSubmit: '导入', iocImportSuccess: '成功导入 {n} 条', iocImportFailed: '导入失败: ', iocImportNoFile: '请先选择要导入的 xlsx 文件',
+  settingsSectionIOC: 'IOC 名单',
   settingsSectionMCP: 'MCP',
   mcpSectionDesc: '接入外部 MCP Server，接入后 AI 助手对话时可以按需调用。',
   mcpColName: '名称', mcpColTransport: '传输方式', mcpColEndpoint: '地址', mcpColCommand: '命令', mcpColArgs: '参数',
@@ -60,9 +72,10 @@ export const STRINGS = {
   usersLongLivedHint: '登录后长期有效（约10年），不需要人工重新登录——适合大屏投放/自动登录等无人值守场景。安全性依赖于账号密码本身，请只对可信场景使用。',
   sessionExpiresIn: '会话剩余 {time}',
 
-  flowsPageTitle: '流量详情', flowsFilterIPPlaceholder: '按IP筛选（源或目的）', flowsFilterApply: '筛选', protoShareTitle: '协议占比',
+  flowsPageTitle: '流量详情', flowsFilterIPPlaceholder: '按IP/端口/协议/域名模糊查询', flowsFilterApply: '筛选', protoShareTitle: '协议占比',
   tabFlows: '五元组流量', tabIPs: 'IP流量', tabPorts: '端口流量', tabDomains: '域名流量', tabCategories: '服务分类', colIP: 'IP', colPort: '端口', colCategory: '类别 / 服务',
   ipsFilterPlaceholder: '按IP模糊查询', portsFilterPlaceholder: '按端口/服务模糊查询', domainsFilterPlaceholder: '按域名模糊查询',
+  dpiOnlyFilterLabel: '仅看 DPI 识别',
 
   ipProfileButton: 'IP 画像', ipProfilePlaceholder: '输入 IP 查看画像', ipProfileTitle: 'IP 流量画像',
   ipProfileInternal: '内网', ipProfileFirstSeen: '首次出现', ipProfileLastSeen: '最后活跃',
@@ -78,7 +91,7 @@ export const STRINGS = {
 
   threatsPageTitle: '威胁感知历史', threatsColTime: '时间', threatsColKind: '类型', threatsColIP: 'IP', threatsColPeers: '对端数 / 流量',
   threatsFilterIPPlaceholder: '按IP模糊查询',
-  threatsKindAll: '全部类型', threatsKindScan: '端口扫描', threatsKindDDoS: 'DDoS疑似', threatsKindVolume: '单IP大流量',
+  threatsKindAll: '全部类型', threatsKindScan: '端口扫描', threatsKindDDoS: 'DDoS疑似', threatsKindVolume: '单IP大流量', threatsKindIOC: 'IOC命中',
 
   settingsPageTitle: '系统配置', settingsSectionGeneral: '常规', settingsSectionThreat: '威胁感知',
   settingsRefreshInterval: '刷新间隔（毫秒）',

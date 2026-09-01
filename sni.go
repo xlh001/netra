@@ -56,7 +56,7 @@ func handleSNIEvent(raw []byte, onSNI func(key xdpflowFlowKey, hostname string))
 	}
 
 	hostname, ok := parseTLSClientHelloSNI(payload)
-	if !ok || hostname == "" {
+	if !ok || hostname == "" || isIPLiteral(hostname) {
 		return
 	}
 

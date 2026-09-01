@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Input, Table, Tabs } from 'antd'
+import { Checkbox, Input, Table, Tabs } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useT } from '../i18n/context'
 import { usePolling } from '../hooks/usePolling'
@@ -60,10 +60,11 @@ export function FlowExplorer() {
 function FlowsTab({ range }: { range: TimeRange }) {
   const t = useT()
   const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState(PAGE_SIZE_CEILING, CHARTS_ROW_CHROME_PX)
-  const [ipFilter, setIpFilter] = useState('')
+  const [q, setQ] = useState('')
+  const [dpiOnly, setDpiOnly] = useState(false)
   const [profileIP, setProfileIP] = useState<string>()
   const [profileOpen, setProfileOpen] = useState(false)
-  const { data, loading, error } = usePolling(() => getFlowsPaged(range, page, pageSize, ipFilter || undefined), 0, [range, page, pageSize, ipFilter])
+  const { data, loading, error } = usePolling(() => getFlowsPaged(range, page, pageSize, q || undefined, dpiOnly), 0, [range, page, pageSize, q, dpiOnly])
   const { data: timeseries, loading: timeseriesLoading } = usePolling(() => getTimeseriesRange(range), 0, [range])
   const windowSeconds = rangeToSeconds(range)
 
@@ -108,13 +109,13 @@ function FlowsTab({ range }: { range: TimeRange }) {
           <ProtocolPie timeseries={timeseries ?? null} loading={timeseriesLoading} />
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <Input.Search
           placeholder={t('flowsFilterIPPlaceholder')}
           style={{ width: 260 }}
           onSearch={(v) => {
             setPage(0)
-            setIpFilter(v)
+            setQ(v)
           }}
           allowClear
         />
@@ -128,6 +129,15 @@ function FlowsTab({ range }: { range: TimeRange }) {
             setProfileOpen(true)
           }}
         />
+        <Checkbox
+          checked={dpiOnly}
+          onChange={(e) => {
+            setPage(0)
+            setDpiOnly(e.target.checked)
+          }}
+        >
+          {t('dpiOnlyFilterLabel')}
+        </Checkbox>
       </div>
       <IPProfileDrawer ip={profileIP} open={profileOpen} onClose={() => setProfileOpen(false)} />
       <Table
@@ -183,7 +193,8 @@ function PortsTab({ range }: { range: TimeRange }) {
   const t = useT()
   const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState(PAGE_SIZE_CEILING)
   const [q, setQ] = useState('')
-  const { data, loading } = usePolling(() => getPortsPaged(range, page, pageSize, q), 0, [range, page, pageSize, q])
+  const [dpiOnly, setDpiOnly] = useState(false)
+  const { data, loading } = usePolling(() => getPortsPaged(range, page, pageSize, q, dpiOnly), 0, [range, page, pageSize, q, dpiOnly])
   const windowSeconds = rangeToSeconds(range)
 
   const columns: ColumnsType<PortStat> = [
@@ -196,15 +207,26 @@ function PortsTab({ range }: { range: TimeRange }) {
 
   return (
     <div ref={containerRef} className="explorer-tab-body">
-      <Input.Search
-        placeholder={t('portsFilterPlaceholder')}
-        style={{ width: 260, marginBottom: 12 }}
-        onSearch={(v) => {
-          setPage(0)
-          setQ(v)
-        }}
-        allowClear
-      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <Input.Search
+          placeholder={t('portsFilterPlaceholder')}
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            setPage(0)
+            setQ(v)
+          }}
+          allowClear
+        />
+        <Checkbox
+          checked={dpiOnly}
+          onChange={(e) => {
+            setPage(0)
+            setDpiOnly(e.target.checked)
+          }}
+        >
+          {t('dpiOnlyFilterLabel')}
+        </Checkbox>
+      </div>
       <Table
         rowKey={(p) => `${p.proto}-${p.port}`}
         columns={columns}

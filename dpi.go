@@ -114,7 +114,18 @@ func detectGreetingService(payload []byte) (string, bool) {
 }
 
 func isTLSClientHello(payload []byte) bool {
-	return len(payload) >= 6 && payload[0] == 0x16 && payload[5] == 0x01
+	if len(payload) < 9 || payload[0] != 0x16 || payload[1] != 0x03 {
+		return false
+	}
+	recordLen := int(payload[3])<<8 | int(payload[4])
+	if recordLen < 4 || recordLen > 16384 {
+		return false
+	}
+	if payload[5] != 0x01 {
+		return false
+	}
+	handshakeLen := int(payload[6])<<16 | int(payload[7])<<8 | int(payload[8])
+	return handshakeLen >= 2 && handshakeLen <= recordLen
 }
 
 func isRDPConnectionRequest(payload []byte) bool {
@@ -122,7 +133,11 @@ func isRDPConnectionRequest(payload []byte) bool {
 }
 
 func isMySQLHandshake(payload []byte) bool {
-	if len(payload) < 6 || payload[4] != 0x0A {
+	if len(payload) < 6 || payload[3] != 0x00 || payload[4] != 0x0A {
+		return false
+	}
+	pktLen := int(payload[0]) | int(payload[1])<<8 | int(payload[2])<<16
+	if pktLen < 20 || pktLen > 255 {
 		return false
 	}
 	for i := 5; i < len(payload) && i < 5+32; i++ {

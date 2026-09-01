@@ -133,9 +133,16 @@ func effectivePort(svcPort, dport uint16) uint16 {
 	return dport
 }
 
+var dpiServerFirstProtocols = map[string]bool{
+	"pop3": true, "imap": true, "mysql": true, "ftp": true, "smtp": true,
+}
+
 func resolveServiceForFlow(srcPort, dstPort, svcPort uint16, dpiService string) (service string, dpi bool, svcOnSrc bool) {
 	service, dpi = resolveService(effectivePort(svcPort, dstPort), dpiService)
 	svcOnSrc = svcPort != 0 && svcPort == srcPort
+	if dpi && dpiServerFirstProtocols[dpiService] {
+		svcOnSrc = true
+	}
 	return
 }
 

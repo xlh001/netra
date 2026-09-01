@@ -6,13 +6,18 @@ import { AlertOutlined, MessageOutlined } from '@ant-design/icons'
 import { useT } from '../i18n/context'
 import { useConfigContext } from '../config/context'
 import {
+  createIOCEntry,
   createIPTag,
   createMCPServer,
   createWebhook,
+  deleteIOCEntry,
   deleteIPTag,
   deleteMCPServer,
   deleteWebhook,
+  getIOCEntriesPaged,
   getIPTagsPaged,
+  importIOCEntriesFile,
+  iocTemplateURL,
   listMCPServers,
   listMCPServerTools,
   listWebhooks,
@@ -20,11 +25,12 @@ import {
   testKafka,
   testMCPServer,
   testWebhook,
+  updateIOCEntry,
   updateIPTag,
   updateMCPServer,
   updateWebhook,
 } from '../api/client'
-import type { AIProvider, ConfigDTO, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, WebhookChannel, WebhookRecord } from '../api/types'
+import type { AIProvider, ConfigDTO, IOCEntryRecord, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, WebhookChannel, WebhookRecord } from '../api/types'
 import { tablePagination } from '../lib/antdTable'
 
 const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; modelPlaceholderKey: string }> = {
@@ -38,7 +44,7 @@ const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; modelPlacehol
   custom: { label: '', modelPlaceholderKey: 'aiModelPlaceholderCustom' },
 }
 
-const CRUD_ONLY_TABS = new Set(['channels', 'ipTags', 'mcpServers'])
+const CRUD_ONLY_TABS = new Set(['channels', 'ipTags', 'ioc', 'mcpServers'])
 
 export function Settings() {
   const t = useT()
@@ -88,6 +94,7 @@ export function Settings() {
                 { key: 'kafka', label: t('settingsSectionKafka'), forceRender: true, children: <KafkaTab t={t} form={form} /> },
                 { key: 'channels', label: t('settingsSectionChannels'), forceRender: true, children: <ChannelsTab t={t} /> },
                 { key: 'ipTags', label: t('settingsSectionIPTags'), forceRender: true, children: <AssetTagsTab t={t} /> },
+                { key: 'ioc', label: t('settingsSectionIOC'), forceRender: true, children: <IOCTab t={t} /> },
                 { key: 'mcpServers', label: t('settingsSectionMCP'), forceRender: true, children: <MCPServersTab t={t} /> },
               ]}
             />
@@ -820,6 +827,221 @@ function IPTagFormModal({ t, mode, onDone, onCancel }: { t: T; mode: IPTagRecord
           <Input placeholder={t('ipTagsLabelPlaceholder')} autoFocus={!isNew} />
         </Form.Item>
       </Form>
+    </Modal>
+  )
+}
+
+function IOCTab({ t }: { t: T }) {
+  const [entries, setEntries] = useState<IOCEntryRecord[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
+  const [q, setQ] = useState('')
+  const [editing, setEditing] = useState<IOCEntryRecord | 'new' | null>(null)
+  const [importing, setImporting] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await getIOCEntriesPaged(page, pageSize, q)
+      setEntries(res.entries)
+      setTotal(res.total)
+    } catch (err) {
+      message.error(t('fetchFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setLoading(false)
+    }
+  }, [t, page, pageSize, q])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  async function handleDelete(entry: IOCEntryRecord) {
+    try {
+      await deleteIOCEntry(entry.id)
+      message.success(t('iocDeleteButton') + ' ' + entry.value)
+      refresh()
+    } catch (err) {
+      message.error(t('iocActionFailed') + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  const columns: ColumnsType<IOCEntryRecord> = [
+    { title: t('iocColKind'), dataIndex: 'kind', width: 90, render: (k: IPTagKind) => (k === 'cidr' ? t('iocKindCIDR') : t('iocKindIP')) },
+    { title: t('iocColValue'), dataIndex: 'value' },
+    { title: t('iocColLabel'), dataIndex: 'label' },
+    {
+      title: t('iocColActions'),
+      key: 'actions',
+      width: 140,
+      render: (_, entry) => (
+        <>
+          <Button type="link" size="small" onClick={() => setEditing(entry)}>
+            {t('iocEditButton')}
+          </Button>
+          <Popconfirm title={t('iocDeleteConfirm', { value: entry.value })} onConfirm={() => handleDelete(entry)} okText={t('iocDeleteButton')} cancelText={t('iocCancel')} okButtonProps={{ danger: true }}>
+            <Button type="link" size="small" danger>
+              {t('iocDeleteButton')}
+            </Button>
+          </Popconfirm>
+        </>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <p className="settings-section-desc">{t('iocSectionDesc')}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Input.Search
+          placeholder={t('iocSearchPlaceholder')}
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            setPage(0)
+            setQ(v)
+          }}
+          allowClear
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button size="small" onClick={() => setImporting(true)}>
+            {t('iocImportButton')}
+          </Button>
+          <Button type="primary" size="small" onClick={() => setEditing('new')}>
+            {t('iocCreateButton')}
+          </Button>
+        </div>
+      </div>
+      <div className="compact-table">
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={entries}
+          loading={loading}
+          size="small"
+          pagination={tablePagination(page, pageSize, total, (p, ps) => {
+            setPage(p)
+            setPageSize(ps)
+          }, t)}
+        />
+      </div>
+
+      {editing && (
+        <IOCFormModal
+          t={t}
+          mode={editing}
+          onDone={() => {
+            setEditing(null)
+            refresh()
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
+      {importing && (
+        <IOCImportModal
+          t={t}
+          onDone={() => {
+            setImporting(false)
+            refresh()
+          }}
+          onCancel={() => setImporting(false)}
+        />
+      )}
+    </>
+  )
+}
+
+interface IOCFormValues {
+  kind: IPTagKind
+  value: string
+  label: string
+}
+
+function IOCFormModal({ t, mode, onDone, onCancel }: { t: T; mode: IOCEntryRecord | 'new'; onDone: () => void; onCancel: () => void }) {
+  const isNew = mode === 'new'
+  const [form] = Form.useForm<IOCFormValues>()
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleFinish(values: IOCFormValues) {
+    setSubmitting(true)
+    try {
+      if (isNew) {
+        await createIOCEntry(values.kind, values.value, values.label)
+      } else {
+        await updateIOCEntry(mode.id, values.label)
+      }
+      onDone()
+    } catch (err) {
+      message.error(t('iocActionFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={isNew ? t('iocCreateTitle') : t('iocEditTitle')}
+      open
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+      confirmLoading={submitting}
+      okText={t('iocSave')}
+      cancelText={t('iocCancel')}
+    >
+      <Form form={form} layout="vertical" initialValues={isNew ? { kind: 'ip' } : { kind: mode.kind, value: mode.value, label: mode.label }} onFinish={handleFinish}>
+        <Form.Item label={t('iocColKind')} name="kind" rules={[{ required: true }]}>
+          <Select
+            disabled={!isNew}
+            options={[
+              { value: 'ip', label: t('iocKindIP') },
+              { value: 'cidr', label: t('iocKindCIDR') },
+            ]}
+          />
+        </Form.Item>
+        <Form.Item label={t('iocColValue')} name="value" rules={[{ required: true }]} extra={isNew ? t('iocValueHint') : undefined}>
+          <Input disabled={!isNew} placeholder={isNew ? '203.0.113.10 / 203.0.113.0/24' : undefined} />
+        </Form.Item>
+        <Form.Item label={t('iocColLabel')} name="label" rules={[{ required: true }]}>
+          <Input placeholder={t('iocLabelPlaceholder')} autoFocus={!isNew} />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
+function IOCImportModal({ t, onDone, onCancel }: { t: T; onDone: () => void; onCancel: () => void }) {
+  const [file, setFile] = useState<File | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit() {
+    if (!file) {
+      message.error(t('iocImportNoFile'))
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await importIOCEntriesFile(file)
+      message.success(t('iocImportSuccess', { n: res.imported }))
+      onDone()
+    } catch (err) {
+      message.error(t('iocImportFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title={t('iocImportTitle')} open onCancel={onCancel} onOk={handleSubmit} confirmLoading={submitting} okText={t('iocImportSubmit')} cancelText={t('iocCancel')}>
+      <a href={iocTemplateURL()} download>
+        {t('iocDownloadTemplate')}
+      </a>
+      <div style={{ marginTop: 12 }}>
+        <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+      </div>
+      <p className="settings-section-desc" style={{ marginTop: 8 }}>
+        {t('iocImportHint')}
+      </p>
     </Modal>
   )
 }

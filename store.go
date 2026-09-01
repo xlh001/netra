@@ -195,6 +195,15 @@ func createSchema(db *sql.DB) error {
 			UNIQUE(kind, value)
 		)`,
 
+		`CREATE TABLE IF NOT EXISTS ioc_entries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL,
+			value TEXT NOT NULL,
+			label TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			UNIQUE(kind, value)
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS mcp_servers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -700,6 +709,122 @@ func (s *Store) UpdateIPTag(id int, label string) (IPTagRecord, error) {
 func (s *Store) DeleteIPTag(id int) error {
 	_, err := s.db.Exec(`DELETE FROM ip_tags WHERE id = ?`, id)
 	return err
+}
+
+type IOCEntryRecord struct {
+	ID    int    `json:"id"`
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+func (s *Store) ListIOCEntries() ([]IOCEntryRecord, error) {
+	rows, err := s.db.Query(`SELECT id, kind, value, label FROM ioc_entries ORDER BY kind, value`)
+	if err != nil {
+		return nil, fmt.Errorf("query ioc entries: %w", err)
+	}
+	defer rows.Close()
+
+	out := []IOCEntryRecord{}
+	for rows.Next() {
+		var e IOCEntryRecord
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Value, &e.Label); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) QueryIOCEntries(page, pageSize int, q string) ([]IOCEntryRecord, int, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	where := "1=1"
+	var args []any
+	if q != "" {
+		where += " AND (value LIKE ? OR label LIKE ?)"
+		like := "%" + q + "%"
+		args = append(args, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM ioc_entries WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count ioc entries: %w", err)
+	}
+	rows, err := s.db.Query(`SELECT id, kind, value, label FROM ioc_entries WHERE `+where+` ORDER BY kind, value LIMIT ? OFFSET ?`, append(args, pageSize, page*pageSize)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query ioc entries: %w", err)
+	}
+	defer rows.Close()
+	out := []IOCEntryRecord{}
+	for rows.Next() {
+		var e IOCEntryRecord
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Value, &e.Label); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, e)
+	}
+	return out, total, rows.Err()
+}
+
+func (s *Store) CreateIOCEntry(kind, value, label string) (IOCEntryRecord, error) {
+	res, err := s.db.Exec(`INSERT INTO ioc_entries(kind, value, label, created_at) VALUES (?, ?, ?, ?)`, kind, value, label, time.Now().Unix())
+	if err != nil {
+		return IOCEntryRecord{}, fmt.Errorf("insert ioc entry: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return IOCEntryRecord{}, err
+	}
+	return IOCEntryRecord{ID: int(id), Kind: kind, Value: value, Label: label}, nil
+}
+
+func (s *Store) UpdateIOCEntry(id int, label string) (IOCEntryRecord, error) {
+	if _, err := s.db.Exec(`UPDATE ioc_entries SET label = ? WHERE id = ?`, label, id); err != nil {
+		return IOCEntryRecord{}, fmt.Errorf("update ioc entry: %w", err)
+	}
+	var e IOCEntryRecord
+	row := s.db.QueryRow(`SELECT id, kind, value, label FROM ioc_entries WHERE id = ?`, id)
+	if err := row.Scan(&e.ID, &e.Kind, &e.Value, &e.Label); err != nil {
+		return IOCEntryRecord{}, fmt.Errorf("read back updated ioc entry: %w", err)
+	}
+	return e, nil
+}
+
+func (s *Store) DeleteIOCEntry(id int) error {
+	_, err := s.db.Exec(`DELETE FROM ioc_entries WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) BulkImportIOCEntries(entries []IOCEntryRecord) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO ioc_entries(kind, value, label, created_at) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	now := time.Now().Unix()
+	n := 0
+	for _, e := range entries {
+		if _, err := stmt.Exec(e.Kind, e.Value, e.Label, now); err != nil {
+			return n, fmt.Errorf("insert ioc entry %s: %w", e.Value, err)
+		}
+		n++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 type MCPServerRecord struct {
@@ -1292,7 +1417,7 @@ func (s *Store) queryBucketSummary(cutoff, until int64) (protoBytes, protoPacket
 }
 
 func (s *Store) queryTopFlows(cutoff, until int64, limit int) ([]FlowStat, error) {
-	rows, _, err := s.ts.queryFlowsLimited(cutoff, until, nil, limit, 0, false)
+	rows, _, err := s.ts.queryFlowsLimited(cutoff, until, nil, "", false, limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query flows: %w", err)
 	}
@@ -1322,10 +1447,32 @@ func (s *Store) queryTopIPs(cutoff, until int64, limit int) ([]IPStat, error) {
 	return out, nil
 }
 
+func (s *Store) enrichPortDPI(cutoff, until int64, rows []portAggRow) error {
+	keys := make([]tsPortKey, 0, len(rows))
+	seen := map[tsPortKey]bool{}
+	for _, r := range rows {
+		if !seen[r.Key] {
+			seen[r.Key] = true
+			keys = append(keys, r.Key)
+		}
+	}
+	winners, err := s.ts.topDPIServiceForPorts(cutoff, until, keys)
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		rows[i].DPIService = winners[rows[i].Key]
+	}
+	return nil
+}
+
 func (s *Store) queryTopPorts(cutoff, until int64, limit int) ([]PortStat, error) {
-	rows, _, err := s.ts.queryPortsLimited(cutoff, until, limit, 0, false)
+	rows, _, err := s.ts.queryPortsLimited(cutoff, until, false, limit, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("query ports: %w", err)
+	}
+	if err := s.enrichPortDPI(cutoff, until, rows); err != nil {
+		return nil, fmt.Errorf("enrich port dpi: %w", err)
 	}
 	out := make([]PortStat, 0, len(rows))
 	for _, r := range rows {
@@ -1378,7 +1525,7 @@ func (s *Store) QueryIPsPaged(from, to time.Time, page, pageSize int, filter str
 	return out, total, nil
 }
 
-func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter string) ([]PortStat, int, error) {
+func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter string, dpiOnly bool) ([]PortStat, int, error) {
 	cutoff, upper := from.Unix(), to.Unix()
 	if page < 0 {
 		page = 0
@@ -1396,7 +1543,10 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 	var total int
 	var err error
 	if filter == "" {
-		pageRows, total, err = s.ts.queryPortsLimited(cutoff, upper, pageSize, page*pageSize, true)
+		pageRows, total, err = s.ts.queryPortsLimited(cutoff, upper, dpiOnly, pageSize, page*pageSize, true)
+		if err == nil {
+			err = s.enrichPortDPI(cutoff, upper, pageRows)
+		}
 	} else {
 		// filter matches against the formatted "proto/port service" text,
 		// not a column DuckDB can push a LIKE into directly -- pull
@@ -1404,9 +1554,15 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 		var all []portAggRow
 		all, err = s.ts.queryPorts(cutoff, upper)
 		if err == nil {
+			err = s.enrichPortDPI(cutoff, upper, all)
+		}
+		if err == nil {
 			var filtered []portAggRow
 			needle := strings.ToLower(filter)
 			for _, r := range all {
+				if dpiOnly && r.DPIService == "" {
+					continue
+				}
 				ps := toStat(r)
 				haystack := strings.ToLower(ps.Proto + "/" + strconv.Itoa(int(ps.Port)) + " " + ps.Service)
 				if strings.Contains(haystack, needle) {
@@ -1635,7 +1791,8 @@ func (s *Store) QueryTopIPsInRange(from, to time.Time, limit int) ([]IPStat, err
 }
 
 type FlowFilter struct {
-	IP string
+	Q       string
+	DPIOnly bool
 }
 
 func (s *Store) QueryFlowsPaged(from, to time.Time, page, pageSize int, filter FlowFilter) ([]FlowStat, int, error) {
@@ -1647,16 +1804,7 @@ func (s *Store) QueryFlowsPaged(from, to time.Time, page, pageSize int, filter F
 		pageSize = 50
 	}
 
-	var ipFilter *uint32
-	if filter.IP != "" {
-		ipNum, err := ipToUint32(filter.IP)
-		if err != nil {
-			return nil, 0, fmt.Errorf("invalid ip filter: %w", err)
-		}
-		ipFilter = &ipNum
-	}
-
-	rows, total, err := s.ts.queryFlowsLimited(cutoff, upper, ipFilter, pageSize, page*pageSize, true)
+	rows, total, err := s.ts.queryFlowsLimited(cutoff, upper, nil, filter.Q, filter.DPIOnly, pageSize, page*pageSize, true)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query flows: %w", err)
 	}
@@ -1704,7 +1852,7 @@ func (s *Store) QueryIPProfile(from, to time.Time, ipStr string) (IPProfile, err
 	}
 	profile.Trend = bucketIPTimeline(timeline, cutoff, until)
 
-	flowRows, _, err := s.ts.queryFlowsLimited(cutoff, until, &ip, 5000, 0, false)
+	flowRows, _, err := s.ts.queryFlowsLimited(cutoff, until, &ip, "", false, 5000, 0, false)
 	if err != nil {
 		return IPProfile{}, fmt.Errorf("query ip flows: %w", err)
 	}
@@ -1717,7 +1865,7 @@ func (s *Store) QueryIPProfile(from, to time.Time, ipStr string) (IPProfile, err
 		svcOnSrc := r.SvcPort != 0 && r.SvcPort == r.Key.SrcPort
 		service, dpi := resolveService(effectivePort(r.SvcPort, r.Key.DstPort), r.DPIService)
 		if service == "" {
-			service = "未知"
+			service = "Unknown"
 		}
 		serviceBytes[service] += r.Bytes
 		if dpi {
