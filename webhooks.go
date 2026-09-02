@@ -55,6 +55,7 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 		return
 	}
 
+	openParen, closeParen := bi(cfg.Language, "（", " ("), bi(cfg.Language, "）", ")")
 	iocGroups := map[string][]ThreatAlert{}
 	var dispatch []ThreatAlert
 	for _, a := range toSend {
@@ -76,7 +77,7 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 			if i > 0 {
 				peerList.WriteByte('\n')
 			}
-			fmt.Fprintf(&peerList, "- %s（%s）", g.PeerIP, formatBytesCN(g.VolumeBytes))
+			fmt.Fprintf(&peerList, "- %s%s%s%s", g.PeerIP, openParen, formatBytesCN(g.VolumeBytes), closeParen)
 			totalBytes += g.VolumeBytes
 		}
 		dispatch = append(dispatch, ThreatAlert{
@@ -91,6 +92,7 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 		log.Printf("webhooks: list enabled webhooks failed: %v", err)
 		return
 	}
+	lang := cfg.Language
 	for _, a := range dispatch {
 		alert := a
 		if alert.Kind != AlertKindIOC {
@@ -112,11 +114,11 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 					var sendErr error
 					switch wh.Channel {
 					case "wecom":
-						sendErr = sendWeComAlert(wh.URL, alert, now, summary)
+						sendErr = sendWeComAlert(wh.URL, alert, now, summary, lang)
 					case "dingtalk":
-						sendErr = sendDingTalkAlert(wh.URL, wh.Secret, alert, now, summary)
+						sendErr = sendDingTalkAlert(wh.URL, wh.Secret, alert, now, summary, lang)
 					case "feishu":
-						sendErr = sendFeishuAlert(wh.URL, alert, now, summary)
+						sendErr = sendFeishuAlert(wh.URL, alert, now, summary, lang)
 					default:
 						log.Printf("webhooks: unknown channel %q (webhook id %d)", wh.Channel, wh.ID)
 						return
@@ -130,20 +132,36 @@ func notifyAlerts(store *Store, cfg ConfigDTO, alerts []ThreatAlert, now time.Ti
 	}
 }
 
-func alertKindLabel(kind AlertKind) string {
+func alertKindLabel(kind AlertKind, lang string) string {
 	switch kind {
 	case AlertKindDDoS:
-		return "疑似DDoS/流量异常"
+		return bi(lang, "疑似DDoS/流量异常", "Suspected DDoS / traffic anomaly")
 	case AlertKindVolume:
-		return "单IP大流量"
+		return bi(lang, "单IP大流量", "Single-IP high traffic")
 	case AlertKindIOC:
-		return "IOC命中"
+		return bi(lang, "IOC命中", "IOC match")
 	default:
-		return "端口/主机扫描"
+		return bi(lang, "端口/主机扫描", "Port/host scan")
 	}
 }
 
-func alertDetailLine(a ThreatAlert) string {
+func alertDetailLine(a ThreatAlert, lang string) string {
+	if lang == LangEN {
+		switch a.Kind {
+		case AlertKindVolume:
+			return fmt.Sprintf("**Total traffic**: %s", formatBytesCN(a.VolumeBytes))
+		case AlertKindIOC:
+			if a.PeerList != "" {
+				return fmt.Sprintf("**Matched entry**: %s\n**Internal hosts involved (%d)**:\n%s", a.Label, a.DistinctPeers, a.PeerList)
+			}
+			return fmt.Sprintf("**Matched entry**: %s\n**Peer IP**: %s\n**Traffic this round**: %s", a.Label, a.PeerIP, formatBytesCN(a.VolumeBytes))
+		}
+		label := "Distinct targets"
+		if a.Kind == AlertKindDDoS {
+			label = "Distinct source IPs"
+		}
+		return fmt.Sprintf("**%s**: %d", label, a.DistinctPeers)
+	}
 	switch a.Kind {
 	case AlertKindVolume:
 		return fmt.Sprintf("**流量总量**：%s", formatBytesCN(a.VolumeBytes))
@@ -174,13 +192,19 @@ func formatBytesCN(n uint64) string {
 	return fmt.Sprintf("%.2f%s", v, units[i])
 }
 
-func sendWeComAlert(webhookURL string, a ThreatAlert, ts time.Time, summary string) error {
+func sendWeComAlert(webhookURL string, a ThreatAlert, ts time.Time, summary string, lang string) error {
+	colon := bi(lang, "：", ": ")
+	title := bi(lang, "## Netra 威胁感知告警", "## Netra Threat Alert")
+	typeLabel := bi(lang, "类型", "Type")
+	ipLabel := bi(lang, "IP", "IP")
+	timeLabel := bi(lang, "时间", "Time")
+	aiLabel := bi(lang, "AI解读", "AI Analysis")
 	content := fmt.Sprintf(
-		"## Netra 威胁感知告警\n**类型**：<font color=\"warning\">%s</font>\n**IP**：%s\n%s\n**时间**：%s",
-		alertKindLabel(a.Kind), formatIPLabel(a.IP, a.Label), alertDetailLine(a), ts.Format("2006-01-02 15:04:05"),
+		"%s\n**%s**%s<font color=\"warning\">%s</font>\n**%s**%s%s\n%s\n**%s**%s%s",
+		title, typeLabel, colon, alertKindLabel(a.Kind, lang), ipLabel, colon, formatIPLabel(a.IP, a.Label), alertDetailLine(a, lang), timeLabel, colon, ts.Format("2006-01-02 15:04:05"),
 	)
 	if summary != "" {
-		content += fmt.Sprintf("\n**AI解读**：%s", summary)
+		content += fmt.Sprintf("\n**%s**%s%s", aiLabel, colon, summary)
 	}
 	return postJSON(webhookURL, map[string]any{
 		"msgtype": "markdown",
@@ -190,24 +214,29 @@ func sendWeComAlert(webhookURL string, a ThreatAlert, ts time.Time, summary stri
 	})
 }
 
-func sendFeishuAlert(webhookURL string, a ThreatAlert, ts time.Time, summary string) error {
+func sendFeishuAlert(webhookURL string, a ThreatAlert, ts time.Time, summary string, lang string) error {
 	template := "orange"
 	if a.Kind != AlertKindScan {
 		template = "red"
 	}
+	colon := bi(lang, "：", ": ")
+	typeLabel := bi(lang, "类型", "Type")
+	ipLabel := bi(lang, "IP", "IP")
+	timeLabel := bi(lang, "时间", "Time")
+	aiLabel := bi(lang, "AI解读", "AI Analysis")
 	text := fmt.Sprintf(
-		"**类型**：%s\n**IP**：%s\n%s\n**时间**：%s",
-		alertKindLabel(a.Kind), formatIPLabel(a.IP, a.Label), alertDetailLine(a), ts.Format("2006-01-02 15:04:05"),
+		"**%s**%s%s\n**%s**%s%s\n%s\n**%s**%s%s",
+		typeLabel, colon, alertKindLabel(a.Kind, lang), ipLabel, colon, formatIPLabel(a.IP, a.Label), alertDetailLine(a, lang), timeLabel, colon, ts.Format("2006-01-02 15:04:05"),
 	)
 	if summary != "" {
-		text += fmt.Sprintf("\n**AI解读**：%s", summary)
+		text += fmt.Sprintf("\n**%s**%s%s", aiLabel, colon, summary)
 	}
 	return postJSON(webhookURL, map[string]any{
 		"msg_type": "interactive",
 		"card": map[string]any{
 			"config": map[string]any{"wide_screen_mode": true},
 			"header": map[string]any{
-				"title":    map[string]any{"tag": "plain_text", "content": "Netra 威胁感知告警"},
+				"title":    map[string]any{"tag": "plain_text", "content": bi(lang, "Netra 威胁感知告警", "Netra Threat Alert")},
 				"template": template,
 			},
 			"elements": []map[string]any{
@@ -217,7 +246,7 @@ func sendFeishuAlert(webhookURL string, a ThreatAlert, ts time.Time, summary str
 	})
 }
 
-func sendDingTalkAlert(webhookURL, secret string, a ThreatAlert, ts time.Time, summary string) error {
+func sendDingTalkAlert(webhookURL, secret string, a ThreatAlert, ts time.Time, summary string, lang string) error {
 	finalURL := webhookURL
 	if secret != "" {
 		timestamp := time.Now().UnixMilli()
@@ -235,17 +264,23 @@ func sendDingTalkAlert(webhookURL, secret string, a ThreatAlert, ts time.Time, s
 		u.RawQuery = q.Encode()
 		finalURL = u.String()
 	}
+	colon := bi(lang, "：", ": ")
+	title := bi(lang, "Netra 威胁感知告警", "Netra Threat Alert")
+	typeLabel := bi(lang, "类型", "Type")
+	ipLabel := bi(lang, "IP", "IP")
+	timeLabel := bi(lang, "时间", "Time")
+	aiLabel := bi(lang, "AI解读", "AI Analysis")
 	text := fmt.Sprintf(
-		"### Netra 威胁感知告警\n\n**类型**：%s\n\n**IP**：%s\n\n%s\n\n**时间**：%s",
-		alertKindLabel(a.Kind), formatIPLabel(a.IP, a.Label), alertDetailLine(a), ts.Format("2006-01-02 15:04:05"),
+		"### %s\n\n**%s**%s%s\n\n**%s**%s%s\n\n%s\n\n**%s**%s%s",
+		title, typeLabel, colon, alertKindLabel(a.Kind, lang), ipLabel, colon, formatIPLabel(a.IP, a.Label), alertDetailLine(a, lang), timeLabel, colon, ts.Format("2006-01-02 15:04:05"),
 	)
 	if summary != "" {
-		text += fmt.Sprintf("\n\n**AI解读**：%s", summary)
+		text += fmt.Sprintf("\n\n**%s**%s%s", aiLabel, colon, summary)
 	}
 	return postJSON(finalURL, map[string]any{
 		"msgtype": "markdown",
 		"markdown": map[string]string{
-			"title": "Netra 威胁感知告警",
+			"title": title,
 			"text":  text,
 		},
 	})

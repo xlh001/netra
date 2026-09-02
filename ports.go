@@ -185,15 +185,43 @@ var serviceCategories = map[string]string{
 	"sap": "企业应用",
 }
 
-func serviceCategory(port uint16) string {
+var serviceCategoryLabelsEN = map[string]string{
+	"数据库":       "Database",
+	"远程管理":     "Remote Access",
+	"文件传输":     "File Transfer",
+	"邮件":         "Mail",
+	"目录服务":     "Directory",
+	"网络基础设施": "Network Infra",
+	"消息队列":     "Messaging",
+	"语音通信":     "Voice/VoIP",
+	"容器/云原生":  "Cloud-Native",
+	"监控/日志":    "Monitoring",
+	"大数据/计算":  "Big Data",
+	"工控/物联网":  "ICS/IoT",
+	"开发工具":     "Dev Tools",
+	"虚拟化":       "Virtualization",
+	"企业应用":     "Enterprise Apps",
+	"其他":         "Other",
+}
+
+func categoryLabel(cat, lang string) string {
+	if lang == LangEN {
+		if en, ok := serviceCategoryLabelsEN[cat]; ok {
+			return en
+		}
+	}
+	return cat
+}
+
+func serviceCategory(port uint16, lang string) string {
 	svc := serviceName(port)
 	if svc == "" {
-		return "其他"
+		return categoryLabel("其他", lang)
 	}
 	if cat, ok := serviceCategories[svc]; ok {
-		return cat
+		return categoryLabel(cat, lang)
 	}
-	return "其他"
+	return categoryLabel("其他", lang)
 }
 
 type portAgg struct {
@@ -203,10 +231,10 @@ type portAgg struct {
 
 const categoryTopServices = 10
 
-func buildCategoryStats(portTotals map[uint16]portAgg) []CategoryStat {
+func buildCategoryStats(portTotals map[uint16]portAgg, lang string) []CategoryStat {
 	catServices := map[string]map[string]portAgg{}
 	for port, agg := range portTotals {
-		cat := serviceCategory(port)
+		cat := serviceCategory(port, lang)
 		svc := serviceName(port)
 		if svc == "" {
 			svc = strconv.Itoa(int(port))
@@ -238,7 +266,7 @@ func buildCategoryStats(portTotals map[uint16]portAgg) []CategoryStat {
 				otherBytes += s.Bytes
 			}
 			cs.Services = append(cs.Services[:categoryTopServices], ServiceStat{
-				Service: fmt.Sprintf("其他 (%d 个)", len(cs.Services)-categoryTopServices),
+				Service: fmt.Sprintf(bi(lang, "其他 (%d 个)", "Other (%d)"), len(cs.Services)-categoryTopServices),
 				Packets: otherPackets,
 				Bytes:   otherBytes,
 			})

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { CompressOutlined, ExpandOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/context'
-import { useT } from '../i18n/context'
+import { useI18n } from '../i18n/context'
 import { formatRemaining } from '../lib/format'
 
 interface TopBarActionsProps {
@@ -11,7 +11,7 @@ interface TopBarActionsProps {
 }
 
 export function TopBarActions({ isFullscreen, onToggleFullscreen }: TopBarActionsProps) {
-  const t = useT()
+  const { t, language } = useI18n()
   const { user, logout } = useAuth()
   const location = useLocation()
   const showFullscreenButton = location.pathname === '/'
@@ -26,7 +26,7 @@ export function TopBarActions({ isFullscreen, onToggleFullscreen }: TopBarAction
 
   return (
     <div className="topbar-actions">
-      <div className="topbar-user" title={t('sessionExpiresIn', { time: formatRemaining(user.expiresAt) })}>
+      <div className="topbar-user" title={t('sessionExpiresIn', { time: formatRemaining(user.expiresAt, language) })}>
         <span className="name">{user.username}</span>
         <span className="role">{user.role === 'admin' ? t('usersRoleAdmin') : t('usersRoleNormal')}</span>
       </div>

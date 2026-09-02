@@ -80,10 +80,20 @@ function ReceiverIcon(props: SVGProps<SVGSVGElement>) {
 }
 
 export function FlowRoleIcon({ initiator }: { initiator: boolean }) {
+  const t = useT()
   return (
-    <Tooltip title={initiator ? '发起方' : '接收方'}>
+    <Tooltip title={initiator ? t('ipProfileInitiator') : t('ipProfileReceiver')}>
       {initiator ? <InitiatorIcon /> : <ReceiverIcon />}
     </Tooltip>
+  )
+}
+
+export function DBTypeBadge({ dbType }: { dbType: string }) {
+  const sc = serviceColor(dbType === 'mysql' ? 'mysql' : dbType)
+  return (
+    <span className="svc-badge" style={sc ? { color: sc.fg, background: sc.bg, borderColor: sc.bd } : undefined}>
+      {dbType}
+    </span>
   )
 }
 

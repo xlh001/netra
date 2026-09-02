@@ -24,11 +24,17 @@ import type {
   Report,
   Role,
   ServiceCategoriesResponse,
+  SQLAuditDBType,
+  SQLAuditPagedResponse,
   ThreatAlertsPagedResponse,
   TimeRange,
   Timeseries,
   Topology,
   UserRecord,
+  WeakAuthConfidence,
+  WeakAuthFindingsPagedResponse,
+  WeakPasswordDictEntry,
+  WeakPasswordDictPagedResponse,
   WebhookChannel,
   WebhookRecord,
   Window,
@@ -80,6 +86,10 @@ async function sendJSON<T>(path: string, method: string, body?: unknown): Promis
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+export function getPublicLanguage(): Promise<{ language: string }> {
+  return getJSON<{ language: string }>('/api/public/language')
 }
 
 export function getReport(window: Window): Promise<Report> {
@@ -142,6 +152,38 @@ export function getServiceCategoriesWindow(window: Window): Promise<ServiceCateg
 
 export function getThreatAlertsPaged(page: number, pageSize: number, q?: string, kind?: AlertKind | ''): Promise<ThreatAlertsPagedResponse> {
   return getJSON<ThreatAlertsPagedResponse>('/api/admin/threat-alerts', { page, pageSize, q: q || undefined, kind: kind || undefined })
+}
+
+export function getSQLAuditPaged(range: TimeRange, page: number, pageSize: number, q?: string, dbType?: SQLAuditDBType | ''): Promise<SQLAuditPagedResponse> {
+  return getJSON<SQLAuditPagedResponse>('/api/admin/sql-audit', { ...rangeParams(range), page, pageSize, q: q || undefined, dbType: dbType || undefined })
+}
+
+export function clearSQLAuditSamples(): Promise<void> {
+  return sendJSON<void>('/api/admin/sql-audit', 'DELETE')
+}
+
+export function getWeakAuthFindingsPaged(range: TimeRange, page: number, pageSize: number, q?: string, confidence?: WeakAuthConfidence | ''): Promise<WeakAuthFindingsPagedResponse> {
+  return getJSON<WeakAuthFindingsPagedResponse>('/api/admin/weak-auth', { ...rangeParams(range), page, pageSize, q: q || undefined, confidence: confidence || undefined })
+}
+
+export function revealWeakAuthPassword(id: number): Promise<{ password: string }> {
+  return sendJSON<{ password: string }>(`/api/admin/weak-auth/${id}/reveal`, 'POST')
+}
+
+export function getWeakPasswordDictPaged(page: number, pageSize: number, q?: string): Promise<WeakPasswordDictPagedResponse> {
+  return getJSON<WeakPasswordDictPagedResponse>('/api/admin/weak-password-dict', { page, pageSize, q: q || undefined })
+}
+
+export function createWeakPasswordDictEntry(value: string): Promise<WeakPasswordDictEntry> {
+  return sendJSON<WeakPasswordDictEntry>('/api/admin/weak-password-dict', 'POST', { value })
+}
+
+export function deleteWeakPasswordDictEntry(id: number): Promise<void> {
+  return sendJSON<void>(`/api/admin/weak-password-dict/${id}`, 'DELETE')
+}
+
+export function importWeakPasswordDict(values: string[]): Promise<{ imported: number }> {
+  return sendJSON<{ imported: number }>('/api/admin/weak-password-dict/import', 'POST', { values })
 }
 
 export function getIPProfile(range: TimeRange, ip: string): Promise<IPProfile> {

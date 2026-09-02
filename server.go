@@ -63,7 +63,7 @@ func spaHandler(fsys fs.FS) http.Handler {
 	})
 }
 
-func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *geoip2.Reader, store *Store, cfg *Config, kafkaExp *kafkaExporter, secret []byte, mon *monitor, ipTags *ipTagCache, iocList *iocCache, mcpMgr *mcpManager) {
+func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *geoip2.Reader, store *Store, cfg *Config, kafkaExp *kafkaExporter, secret []byte, mon *monitor, ipTags *ipTagCache, iocList *iocCache, mcpMgr *mcpManager, weakPasswordDict *weakPasswordDict, weakAuthSecret []byte) {
 	sub, err := fs.Sub(webAssets, "web")
 	if err != nil {
 		log.Fatalf("embed web assets: %v", err)
@@ -279,7 +279,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		categories, err := store.QueryServiceCategories(from, to)
+		categories, err := store.QueryServiceCategories(from, to, cfg.Snapshot().Language)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -332,6 +332,158 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			Alerts []ThreatAlertRecord `json:"alerts"`
 		}{total, page, alerts})
 	})))
+
+	mux.Handle("DELETE /api/admin/sql-audit", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		if err := store.ClearSQLAuditSamples(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.Handle("/api/admin/sql-audit", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		page, pageSize, err := parsePaging(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		records, total, err := store.QuerySQLAuditPaged(from, to, r.URL.Query().Get("dbType"), r.URL.Query().Get("q"), page, pageSize)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Total   int                `json:"total"`
+			Page    int                `json:"page"`
+			Records []SQLAuditRecordDB `json:"records"`
+		}{total, page, records})
+	})))
+
+	mux.Handle("/api/admin/weak-auth", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		page, pageSize, err := parsePaging(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		findings, total, err := store.QueryWeakAuthFindingsPaged(from, to, r.URL.Query().Get("confidence"), r.URL.Query().Get("q"), page, pageSize)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Total    int                 `json:"total"`
+			Page     int                 `json:"page"`
+			Findings []WeakAuthFindingDB `json:"findings"`
+		}{total, page, findings})
+	})))
+
+	mux.Handle("POST /api/admin/weak-auth/{id}/reveal", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		password, err := store.RevealWeakAuthPassword(id, weakAuthSecret)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Password string `json:"password"`
+		}{password})
+	}))
+
+	mux.Handle("GET /api/admin/weak-password-dict", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		page, pageSize, err := parsePaging(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		entries, total, err := store.QueryWeakPasswordDictPaged(page, pageSize, r.URL.Query().Get("q"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Total   int                     `json:"total"`
+			Page    int                     `json:"page"`
+			Entries []WeakPasswordDictEntry `json:"entries"`
+		}{total, page, entries})
+	}))
+	mux.Handle("POST /api/admin/weak-password-dict", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		value := strings.TrimSpace(body.Value)
+		if value == "" {
+			http.Error(w, "value is required", http.StatusBadRequest)
+			return
+		}
+		entry, err := store.CreateWeakPasswordDictEntry(value)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListWeakPasswordDict(); err == nil {
+			weakPasswordDict.rebuild(all)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entry)
+	}))
+	mux.Handle("DELETE /api/admin/weak-password-dict/{id}", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		if err := store.DeleteWeakPasswordDictEntry(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListWeakPasswordDict(); err == nil {
+			weakPasswordDict.rebuild(all)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	mux.Handle("POST /api/admin/weak-password-dict/import", adminOnly(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Values []string `json:"values"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		n, err := store.BulkImportWeakPasswordDict(body.Values)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if all, err := store.ListWeakPasswordDict(); err == nil {
+			weakPasswordDict.rebuild(all)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Imported int `json:"imported"`
+		}{n})
+	}))
 
 	mux.Handle("GET /api/config", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -512,7 +664,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			return
 		}
 		messages := make([]chatCompletionMessage, 0, len(history)+2)
-		messages = append(messages, chatCompletionMessage{Role: "system", Content: buildSystemPrompt(time.Now())})
+		messages = append(messages, chatCompletionMessage{Role: "system", Content: buildSystemPrompt(time.Now(), snap.Language)})
 		for _, m := range history {
 			messages = append(messages, chatCompletionMessage{Role: m.Role, Content: m.Content})
 		}
@@ -573,14 +725,15 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			return
 		}
 		testAlert := ThreatAlert{Kind: AlertKindScan, IP: "203.0.113.1", DistinctPeers: 999}
+		testLang := cfg.Snapshot().Language
 		var err error
 		switch req.Channel {
 		case "wecom":
-			err = sendWeComAlert(req.URL, testAlert, time.Now(), "")
+			err = sendWeComAlert(req.URL, testAlert, time.Now(), "", testLang)
 		case "dingtalk":
-			err = sendDingTalkAlert(req.URL, req.Secret, testAlert, time.Now(), "")
+			err = sendDingTalkAlert(req.URL, req.Secret, testAlert, time.Now(), "", testLang)
 		case "feishu":
-			err = sendFeishuAlert(req.URL, testAlert, time.Now(), "")
+			err = sendFeishuAlert(req.URL, testAlert, time.Now(), "", testLang)
 		default:
 			http.Error(w, "unknown channel: "+req.Channel, http.StatusBadRequest)
 			return
@@ -1057,6 +1210,12 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		json.NewEncoder(w).Encode(mon.snapshot(agg, kafkaExp, mcpMgr))
 	}))
 
+	mux.HandleFunc("GET /api/public/language", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Language string `json:"language"`
+		}{cfg.Snapshot().Language})
+	})
 	mux.HandleFunc("POST /api/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Username string `json:"username"`
@@ -1275,6 +1434,9 @@ func validateConfig(dto ConfigDTO) error {
 	}
 	if dto.KafkaFlowTopK < 0 {
 		return fmt.Errorf("kafkaFlowTopK must be zero or positive, got %d", dto.KafkaFlowTopK)
+	}
+	if dto.SQLAuditEnabled && dto.SQLAuditMaxPerTick <= 0 {
+		return fmt.Errorf("sqlAuditMaxPerTick must be positive when SQL audit is enabled, got %d", dto.SQLAuditMaxPerTick)
 	}
 	return nil
 }

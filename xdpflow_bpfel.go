@@ -36,11 +36,15 @@ type xdpflowFlowStats struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	xdpflowMapDpiEvents     = "dpi_events"
-	xdpflowMapFlowStatsMap  = "flow_stats_map"
-	xdpflowMapHttpEvents    = "http_events"
-	xdpflowMapSniEvents     = "sni_events"
-	xdpflowProgXdpFlowCount = "xdp_flow_count"
+	xdpflowMapDpiEvents      = "dpi_events"
+	xdpflowMapFlowStatsMap   = "flow_stats_map"
+	xdpflowMapHttpAuthEvents = "http_auth_events"
+	xdpflowMapHttpAuthFlags  = "http_auth_flags"
+	xdpflowMapHttpEvents     = "http_events"
+	xdpflowMapSniEvents      = "sni_events"
+	xdpflowMapSqlAuditEvents = "sql_audit_events"
+	xdpflowMapSqlAuditFlags  = "sql_audit_flags"
+	xdpflowProgXdpFlowCount  = "xdp_flow_count"
 )
 
 // loadXdpflow returns the embedded CollectionSpec for xdpflow.
@@ -92,10 +96,14 @@ type xdpflowProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xdpflowMapSpecs struct {
-	DpiEvents    *ebpf.MapSpec `ebpf:"dpi_events"`
-	FlowStatsMap *ebpf.MapSpec `ebpf:"flow_stats_map"`
-	HttpEvents   *ebpf.MapSpec `ebpf:"http_events"`
-	SniEvents    *ebpf.MapSpec `ebpf:"sni_events"`
+	DpiEvents      *ebpf.MapSpec `ebpf:"dpi_events"`
+	FlowStatsMap   *ebpf.MapSpec `ebpf:"flow_stats_map"`
+	HttpAuthEvents *ebpf.MapSpec `ebpf:"http_auth_events"`
+	HttpAuthFlags  *ebpf.MapSpec `ebpf:"http_auth_flags"`
+	HttpEvents     *ebpf.MapSpec `ebpf:"http_events"`
+	SniEvents      *ebpf.MapSpec `ebpf:"sni_events"`
+	SqlAuditEvents *ebpf.MapSpec `ebpf:"sql_audit_events"`
+	SqlAuditFlags  *ebpf.MapSpec `ebpf:"sql_audit_flags"`
 }
 
 // xdpflowVariableSpecs contains global variables before they are loaded into the kernel.
@@ -124,18 +132,26 @@ func (o *xdpflowObjects) Close() error {
 //
 // It can be passed to loadXdpflowObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xdpflowMaps struct {
-	DpiEvents    *ebpf.Map `ebpf:"dpi_events"`
-	FlowStatsMap *ebpf.Map `ebpf:"flow_stats_map"`
-	HttpEvents   *ebpf.Map `ebpf:"http_events"`
-	SniEvents    *ebpf.Map `ebpf:"sni_events"`
+	DpiEvents      *ebpf.Map `ebpf:"dpi_events"`
+	FlowStatsMap   *ebpf.Map `ebpf:"flow_stats_map"`
+	HttpAuthEvents *ebpf.Map `ebpf:"http_auth_events"`
+	HttpAuthFlags  *ebpf.Map `ebpf:"http_auth_flags"`
+	HttpEvents     *ebpf.Map `ebpf:"http_events"`
+	SniEvents      *ebpf.Map `ebpf:"sni_events"`
+	SqlAuditEvents *ebpf.Map `ebpf:"sql_audit_events"`
+	SqlAuditFlags  *ebpf.Map `ebpf:"sql_audit_flags"`
 }
 
 func (m *xdpflowMaps) Close() error {
 	return _XdpflowClose(
 		m.DpiEvents,
 		m.FlowStatsMap,
+		m.HttpAuthEvents,
+		m.HttpAuthFlags,
 		m.HttpEvents,
 		m.SniEvents,
+		m.SqlAuditEvents,
+		m.SqlAuditFlags,
 	)
 }
 

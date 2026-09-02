@@ -1,9 +1,39 @@
 import { useState, type CSSProperties, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/context'
-import { useT } from '../i18n/context'
+import { useI18n } from '../i18n/context'
 import { Logo } from '../components/Logo'
 import { RadarField } from '../components/RadarField'
+
+function LoginLanguageSwitch() {
+  const { language, setLanguage } = useI18n()
+  return (
+    <div
+      style={{ position: 'absolute', top: '18px', right: '20px', zIndex: 2, display: 'flex', gap: '2px' }}
+      title="Display language preview only -- the actual system language is set by an administrator under Settings."
+    >
+      {(['zh', 'en'] as const).map((lang) => (
+        <button
+          key={lang}
+          type="button"
+          onClick={() => setLanguage(lang)}
+          style={{
+            background: language === lang ? 'var(--panel-2, rgba(53,224,255,0.14))' : 'transparent',
+            border: '1px solid var(--line)',
+            borderRadius: '5px',
+            padding: '3px 8px',
+            fontSize: '11px',
+            fontFamily: 'var(--font-mono)',
+            color: language === lang ? 'var(--scan)' : 'var(--ink-dim)',
+            cursor: 'pointer',
+          }}
+        >
+          {lang === 'zh' ? '中文' : 'EN'}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 const inputStyle: CSSProperties = {
   background: 'var(--panel)',
@@ -16,7 +46,7 @@ const inputStyle: CSSProperties = {
 }
 
 export function Login() {
-  const t = useT()
+  const { t } = useI18n()
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -43,6 +73,7 @@ export function Login() {
   return (
     <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
       <RadarField />
+      <LoginLanguageSwitch />
       <form onSubmit={handleSubmit} className="panel" style={{ width: '320px', padding: '28px 24px', position: 'relative', zIndex: 1 }}>
         <div style={{ textAlign: 'center', marginBottom: '22px' }}>
           <Logo />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DependencyList } from 'react'
+import { useCallback, useEffect, useRef, useState, type DependencyList } from 'react'
 
 interface PollingState<T> {
   data: T | null
@@ -6,10 +6,11 @@ interface PollingState<T> {
   loading: boolean
 }
 
-export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number, deps: DependencyList = []): PollingState<T> {
+export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number, deps: DependencyList = []): PollingState<T> & { refetch: () => void } {
   const [state, setState] = useState<PollingState<T>>({ data: null, error: null, loading: true })
   const fetcherRef = useRef(fetcher)
   fetcherRef.current = fetcher
+  const [refreshTick, setRefreshTick] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -37,7 +38,9 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number, dep
       if (timer) clearInterval(timer)
     }
 
-  }, [intervalMs, ...deps])
+  }, [intervalMs, refreshTick, ...deps])
 
-  return state
+  const refetch = useCallback(() => setRefreshTick((n) => n + 1), [])
+
+  return { ...state, refetch }
 }

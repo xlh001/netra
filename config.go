@@ -11,6 +11,8 @@ type Config struct {
 }
 
 type ConfigDTO struct {
+	Language string `json:"language"`
+
 	RefreshIntervalMs int  `json:"refreshIntervalMs"`
 	PersistScanAlerts bool `json:"persistScanAlerts"`
 
@@ -37,10 +39,30 @@ type ConfigDTO struct {
 	KafkaSASLPassword string `json:"kafkaSaslPassword,omitempty"`
 	KafkaTLS          bool   `json:"kafkaTls"`
 	KafkaFlowTopK     int    `json:"kafkaFlowTopK"`
+
+	SQLAuditEnabled    bool `json:"sqlAuditEnabled"`
+	SQLAuditMaxPerTick int  `json:"sqlAuditMaxPerTick"`
+
+	WeakAuthEnabled bool `json:"weakAuthEnabled"`
+}
+
+const defaultSQLAuditMaxPerTick = 500
+
+const (
+	LangZH = "zh"
+	LangEN = "en"
+)
+
+func bi(lang, zh, en string) string {
+	if lang == LangEN {
+		return en
+	}
+	return zh
 }
 
 func defaultConfig() *Config {
 	return &Config{v: ConfigDTO{
+		Language:                   LangZH,
 		RefreshIntervalMs:          5000,
 		PersistScanAlerts:          true,
 		DBFlowTopK:                 defaultDBFlowTopK,
@@ -53,6 +75,9 @@ func defaultConfig() *Config {
 		AIEnabled:                  false,
 		KafkaEnabled:               false,
 		KafkaFlowTopK:              defaultKafkaFlowTopK,
+		SQLAuditEnabled:            false,
+		SQLAuditMaxPerTick:         defaultSQLAuditMaxPerTick,
+		WeakAuthEnabled:            false,
 	}}
 }
 

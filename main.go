@@ -142,24 +142,6 @@ func main() {
 
 	agg := newAggregator(*interval)
 
-	sniReader, err := startSNIReader(objs.SniEvents, agg.recordDomain)
-	if err != nil {
-		log.Fatalf("start SNI reader: %v", err)
-	}
-	defer sniReader.Close()
-
-	httpReader, err := startHTTPReader(objs.HttpEvents, agg.recordDomain)
-	if err != nil {
-		log.Fatalf("start HTTP host reader: %v", err)
-	}
-	defer httpReader.Close()
-
-	dpiReader, err := startDPIReader(objs.DpiEvents, agg.recordDPIService)
-	if err != nil {
-		log.Fatalf("start dpi reader: %v", err)
-	}
-	defer dpiReader.Close()
-
 	geoDB, err := loadGeoDB(*geoipDB)
 	if err != nil {
 		log.Printf("geoip: could not open %q, world map will be disabled: %v", *geoipDB, err)
@@ -196,6 +178,56 @@ func main() {
 	applyAnomalyConfig(agg, cfg)
 	applyCapacityConfig(agg, cfg)
 
+	sqlAuditMgr := newSQLAuditManager(cfg, objs.SqlAuditFlags)
+
+	weakAuthSecret, err := store.EnsureWeakAuthSecret()
+	if err != nil {
+		log.Fatalf("set up weak auth secret: %v", err)
+	}
+	weakPasswordDict := newWeakPasswordDict()
+	if err := store.SeedWeakPasswordDictIfEmpty(defaultWeakPasswordDict()); err != nil {
+		log.Printf("seed weak password dict: %v", err)
+	}
+	if saved, err := store.ListWeakPasswordDict(); err != nil {
+		log.Printf("load weak password dict: %v", err)
+	} else {
+		weakPasswordDict.rebuild(saved)
+	}
+	weakAuthMgr := newWeakAuthManager(cfg, weakPasswordDict)
+
+	sniReader, err := startSNIReader(objs.SniEvents, agg.recordDomain)
+	if err != nil {
+		log.Fatalf("start SNI reader: %v", err)
+	}
+	defer sniReader.Close()
+
+	httpReader, err := startHTTPReader(objs.HttpEvents, agg.recordDomain)
+	if err != nil {
+		log.Fatalf("start HTTP host reader: %v", err)
+	}
+	defer httpReader.Close()
+
+	dpiReader, err := startDPIReader(objs.DpiEvents, func(key xdpflowFlowKey, service string) {
+		agg.recordDPIService(key, service)
+		sqlAuditMgr.onDPIService(key, service)
+	})
+	if err != nil {
+		log.Fatalf("start dpi reader: %v", err)
+	}
+	defer dpiReader.Close()
+
+	sqlAuditReader, err := startSQLAuditReader(objs.SqlAuditEvents, sqlAuditMgr)
+	if err != nil {
+		log.Fatalf("start sql audit reader: %v", err)
+	}
+	defer sqlAuditReader.Close()
+
+	weakAuthReader, err := startWeakAuthReader(objs.HttpAuthEvents, weakAuthMgr)
+	if err != nil {
+		log.Fatalf("start weak auth reader: %v", err)
+	}
+	defer weakAuthReader.Close()
+
 	ipTags := newIPTagCache()
 	iocList := newIOCCache()
 
@@ -229,7 +261,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("set up auth secret: %v", err)
 		}
-		if result, created, err := store.BootstrapAdminIfEmpty(); err != nil {
+		if result, created, err := store.BootstrapAdminIfEmpty(cfg.Snapshot().Language); err != nil {
 			log.Fatalf("bootstrap admin account: %v", err)
 		} else if created {
 			log.Printf("created initial admin account -- username: %s  password: %s  (shown once, log in and change it)", result.AdminUsername, result.AdminPassword)
@@ -237,7 +269,7 @@ func main() {
 		}
 		mon := newMonitor(*dbPath, store, ifaceConfigs, *generic)
 		go mon.run()
-		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, iocList, mcpMgr)
+		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, iocList, mcpMgr, weakPasswordDict, weakAuthSecret)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -273,6 +305,25 @@ func main() {
 				notifyAlerts(store, cfg.Snapshot(), alerts, now, ipTags)
 				store.Enqueue(snap)
 				kafkaExp.Publish(snap)
+
+				sqlAuditMgr.cleanup(now)
+				if records := sqlAuditMgr.drain(cfg.Snapshot().SQLAuditMaxPerTick); len(records) > 0 {
+					go func() {
+						if err := store.InsertSQLAuditRecords(records); err != nil {
+							log.Printf("sql audit: insert failed: %v", err)
+						}
+					}()
+				}
+
+				weakAuthMgr.cleanup(now)
+				if findings := weakAuthMgr.drain(weakAuthMaxFindingsPerTick); len(findings) > 0 {
+					go func() {
+						if err := store.InsertWeakAuthFindings(findings, weakAuthSecret); err != nil {
+							log.Printf("weak auth: insert failed: %v", err)
+						}
+					}()
+				}
+
 				prev = cur
 			}()
 		}

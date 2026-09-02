@@ -186,6 +186,26 @@ export interface ThreatAlertsPagedResponse {
   alerts: ThreatAlertRecord[]
 }
 
+export type SQLAuditDBType = 'mysql' | 'mongodb'
+
+export interface SQLAuditRecord {
+  time: string
+  dbType: SQLAuditDBType
+  srcIP: string
+  srcPort: number
+  dstIP: string
+  dstPort: number
+  queryText: string
+  truncated: boolean
+  count: number
+}
+
+export interface SQLAuditPagedResponse {
+  total: number
+  page: number
+  records: SQLAuditRecord[]
+}
+
 export interface IPProfilePeer {
   peer: string
   bytes: number
@@ -224,6 +244,8 @@ export interface IPProfile {
 }
 
 export interface ConfigDTO {
+  language: string
+
   refreshIntervalMs: number
   persistScanAlerts: boolean
   dbFlowTopK: number
@@ -249,6 +271,11 @@ export interface ConfigDTO {
   kafkaSaslPassword?: string
   kafkaTls: boolean
   kafkaFlowTopK: number
+
+  sqlAuditEnabled: boolean
+  sqlAuditMaxPerTick: number
+
+  weakAuthEnabled: boolean
 }
 
 export type AIProvider = 'openai' | 'deepseek' | 'qwen' | 'moonshot' | 'glm' | 'doubao' | 'ollama' | 'custom' | ''
@@ -405,6 +432,38 @@ export interface IfaceStatus {
   speedMbps?: number
   rxPPS: number
   rxBPS: number
+}
+
+export type WeakAuthConfidence = 'high' | 'medium' | 'low'
+
+export interface WeakAuthFinding {
+  id: number
+  time: string
+  srcIP: string
+  srcPort: number
+  dstIP: string
+  dstPort: number
+  username: string
+  matchedRule: string
+  confidence: WeakAuthConfidence
+  statusCode: number
+}
+
+export interface WeakAuthFindingsPagedResponse {
+  total: number
+  page: number
+  findings: WeakAuthFinding[]
+}
+
+export interface WeakPasswordDictEntry {
+  id: number
+  value: string
+}
+
+export interface WeakPasswordDictPagedResponse {
+  total: number
+  page: number
+  entries: WeakPasswordDictEntry[]
 }
 
 export interface UserRecord {

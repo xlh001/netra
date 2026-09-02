@@ -1,0 +1,89 @@
+<svg width="2320" height="1240" viewBox="0 0 1160 620" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0C8599"/>
+    </marker>
+    <marker id="arrowDim2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8A97A3"/>
+    </marker>
+  </defs>
+
+  <style>
+    .comp-title { font: 600 15px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #141A21; }
+    .comp-title-lg { font: 700 16px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #141A21; }
+    .comp-sub { font: 400 12px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #5C6B78; }
+    .mono-dim { font: 400 11px "SF Mono", Menlo, Consolas, monospace; fill: #7C8996; }
+    .flow-label { font: 500 11.5px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #5C6B78; }
+    .legend-label { font: 400 12px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #5C6B78; }
+    .caption { font: 400 12px -apple-system, "Segoe UI", "PingFang SC", sans-serif; fill: #7C8996; }
+    .comp-box { fill: #ffffff; stroke: #D7DFE4; stroke-width: 1.2; }
+    .comp-box-accent { fill: #E4F4F7; stroke: #0C8599; stroke-width: 1.4; }
+    .span-box { fill: #E4F4F7; stroke: #0C8599; stroke-width: 1.4; }
+  </style>
+
+  <rect x="0" y="0" width="1160" height="620" fill="#F6F8FA"/>
+
+  <!-- legend -->
+  <line x1="40" y1="30" x2="80" y2="30" stroke="#0C8599" stroke-width="2.5"/>
+  <text x="90" y="34" class="legend-label">Production traffic (real forwarding path)</text>
+  <line x1="390" y1="30" x2="430" y2="30" stroke="#8A97A3" stroke-width="2" stroke-dasharray="4 4"/>
+  <text x="440" y="34" class="legend-label">Mirrored traffic (read-only copy replicated by the switch)</text>
+
+  <!-- internet -->
+  <rect x="455" y="90" width="250" height="50" rx="10" class="comp-box"/>
+  <text x="580" y="120" text-anchor="middle" class="comp-title">Internet / External Network</text>
+
+  <line x1="580" y1="140" x2="580" y2="172" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="614" y="160" class="flow-label">North-South traffic</text>
+
+  <!-- gateway -->
+  <rect x="455" y="176" width="250" height="50" rx="10" class="comp-box"/>
+  <text x="580" y="206" text-anchor="middle" class="comp-title">Egress Gateway / Firewall</text>
+
+  <line x1="580" y1="226" x2="580" y2="258" stroke="#0C8599" stroke-width="2" marker-end="url(#arrow2)"/>
+
+  <!-- core switch -->
+  <rect x="380" y="262" width="400" height="64" rx="10" class="comp-box"/>
+  <text x="580" y="288" text-anchor="middle" class="comp-title-lg">Core Switch</text>
+  <text x="580" y="308" text-anchor="middle" class="comp-sub">North-south &amp; east-west traffic meet here</text>
+
+  <!-- SPAN mirror port, drawn as a port hanging off the switch's right side -->
+  <rect x="768" y="272" width="112" height="44" rx="6" class="span-box"/>
+  <text x="824" y="290" text-anchor="middle" class="comp-title" style="font-size:13px">SPAN</text>
+  <text x="824" y="306" text-anchor="middle" class="comp-sub" style="font-size:11px">Mirror Port</text>
+
+  <!-- east-west: switch -> three app servers -->
+  <line x1="460" y1="326" x2="180" y2="428" stroke="#0C8599" stroke-width="1.8" marker-start="url(#arrow2)" marker-end="url(#arrow2)"/>
+  <line x1="540" y1="326" x2="400" y2="428" stroke="#0C8599" stroke-width="1.8" marker-start="url(#arrow2)" marker-end="url(#arrow2)"/>
+  <line x1="600" y1="326" x2="620" y2="428" stroke="#0C8599" stroke-width="1.8" marker-start="url(#arrow2)" marker-end="url(#arrow2)"/>
+  <text x="400" y="404" text-anchor="middle" class="flow-label">East-West traffic · between internal servers</text>
+
+  <rect x="60" y="430" width="180" height="60" rx="8" class="comp-box"/>
+  <text x="150" y="456" text-anchor="middle" class="comp-title">App Server A</text>
+  <text x="150" y="476" text-anchor="middle" class="mono-dim">Web</text>
+
+  <rect x="290" y="430" width="180" height="60" rx="8" class="comp-box"/>
+  <text x="380" y="456" text-anchor="middle" class="comp-title">App Server B</text>
+  <text x="380" y="476" text-anchor="middle" class="mono-dim">App</text>
+
+  <rect x="520" y="430" width="180" height="60" rx="8" class="comp-box"/>
+  <text x="610" y="456" text-anchor="middle" class="comp-title">App Server C</text>
+  <text x="610" y="476" text-anchor="middle" class="mono-dim">Database</text>
+
+  <!-- mirrored copy: SPAN port -> standalone host, last leg stays vertical, arrow points down into the Netra host's top edge -->
+  <path d="M 824 316 L 824 372 L 970 372 L 970 404" fill="none" stroke="#8A97A3" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arrowDim2)"/>
+  <text x="897" y="364" text-anchor="middle" class="flow-label">Read-only copy</text>
+  <text x="897" y="392" text-anchor="middle" class="flow-label">One-way, no response packets</text>
+
+  <!-- standalone host: Netra -->
+  <rect x="800" y="404" width="300" height="130" rx="10" class="comp-box-accent"/>
+  <text x="820" y="430" class="comp-sub">Standalone host · out-of-band deployment</text>
+  <text x="820" y="458" class="comp-title-lg" style="font-size:20px">Netra</text>
+  <text x="820" y="480" class="comp-sub">Receives a read-only copy from SPAN</text>
+  <text x="820" y="500" class="comp-sub">Not in the forwarding path or prod network</text>
+  <text x="820" y="522" class="mono-dim">Physical NIC · mirrored traffic · XDP</text>
+
+  <!-- footer captions -->
+  <text x="580" y="570" text-anchor="middle" class="caption">North-South: traffic between the internal network and the external network/internet; East-West: traffic between internal servers — both traverse the core switch.</text>
+  <text x="580" y="590" text-anchor="middle" class="caption">The switch's SPAN mirror port replicates selected traffic and sends it one-way to Netra on a standalone host; the original forwarding path and production network are completely unaffected.</text>
+</svg>

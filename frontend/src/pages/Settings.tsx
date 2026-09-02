@@ -1,22 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, message } from 'antd'
-import type { FormInstance } from 'antd'
+import { Button, Divider, Form, Input, InputNumber, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Upload, message } from 'antd'
+import type { FormInstance, UploadFile } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { AlertOutlined, MessageOutlined } from '@ant-design/icons'
-import { useT } from '../i18n/context'
+import { AlertOutlined, MessageOutlined, UploadOutlined } from '@ant-design/icons'
+import { useI18n, useT } from '../i18n/context'
 import { useConfigContext } from '../config/context'
 import {
   createIOCEntry,
   createIPTag,
   createMCPServer,
   createWebhook,
+  createWeakPasswordDictEntry,
   deleteIOCEntry,
   deleteIPTag,
   deleteMCPServer,
   deleteWebhook,
+  deleteWeakPasswordDictEntry,
   getIOCEntriesPaged,
   getIPTagsPaged,
+  getWeakPasswordDictPaged,
   importIOCEntriesFile,
+  importWeakPasswordDict,
   iocTemplateURL,
   listMCPServers,
   listMCPServerTools,
@@ -30,24 +34,24 @@ import {
   updateMCPServer,
   updateWebhook,
 } from '../api/client'
-import type { AIProvider, ConfigDTO, IOCEntryRecord, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, WebhookChannel, WebhookRecord } from '../api/types'
-import { tablePagination } from '../lib/antdTable'
+import type { AIProvider, ConfigDTO, IOCEntryRecord, IPTagKind, IPTagRecord, MCPAuthType, MCPConnStatus, MCPServerRecord, MCPServerTransport, MCPToolInfo, WeakPasswordDictEntry, WebhookChannel, WebhookRecord } from '../api/types'
+import { DataPagination } from '../components/DataPagination'
 
-const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; modelPlaceholderKey: string }> = {
-  openai: { label: 'OpenAI', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
-  deepseek: { label: 'DeepSeek', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
-  qwen: { label: '通义千问', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
-  moonshot: { label: 'Moonshot (Kimi)', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
-  glm: { label: '智谱 GLM', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
-  doubao: { label: '火山引擎豆包', modelPlaceholderKey: 'aiModelPlaceholderDoubao' },
-  ollama: { label: 'Ollama (本地)', modelPlaceholderKey: 'aiModelPlaceholderOllama' },
-  custom: { label: '', modelPlaceholderKey: 'aiModelPlaceholderCustom' },
+const AI_PRESETS: Record<Exclude<AIProvider, ''>, { label: string; labelEn: string; modelPlaceholderKey: string }> = {
+  openai: { label: 'OpenAI', labelEn: 'OpenAI', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
+  deepseek: { label: 'DeepSeek', labelEn: 'DeepSeek', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
+  qwen: { label: '通义千问', labelEn: 'Qwen (Tongyi)', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
+  moonshot: { label: 'Moonshot (Kimi)', labelEn: 'Moonshot (Kimi)', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
+  glm: { label: '智谱 GLM', labelEn: 'Zhipu GLM', modelPlaceholderKey: 'aiModelPlaceholderGeneric' },
+  doubao: { label: '火山引擎豆包', labelEn: 'Volcano Engine Doubao', modelPlaceholderKey: 'aiModelPlaceholderDoubao' },
+  ollama: { label: 'Ollama (本地)', labelEn: 'Ollama (local)', modelPlaceholderKey: 'aiModelPlaceholderOllama' },
+  custom: { label: '', labelEn: '', modelPlaceholderKey: 'aiModelPlaceholderCustom' },
 }
 
 const CRUD_ONLY_TABS = new Set(['channels', 'ipTags', 'ioc', 'mcpServers'])
 
 export function Settings() {
-  const t = useT()
+  const { t, setLanguage } = useI18n()
   const { config, loading, error, save } = useConfigContext()
   const [form] = Form.useForm<ConfigDTO>()
   const [activeTab, setActiveTab] = useState('general')
@@ -60,6 +64,7 @@ export function Settings() {
     try {
       const updated = await save(values)
       form.setFieldsValue(updated)
+      setLanguage(updated.language === 'en' ? 'en' : 'zh')
       message.success(t('settingsSaved'))
     } catch (err) {
       message.error(t('settingsSaveFailed') + (err instanceof Error ? err.message : String(err)))
@@ -90,6 +95,8 @@ export function Settings() {
                 { key: 'general', label: t('settingsSectionGeneral'), forceRender: true, children: <GeneralTab t={t} /> },
                 { key: 'threat', label: t('settingsSectionThreat'), forceRender: true, children: <ThreatTab t={t} form={form} /> },
                 { key: 'capacity', label: t('settingsSectionCapacity'), forceRender: true, children: <CapacityTab t={t} /> },
+                { key: 'sqlAudit', label: t('settingsSectionSQLAudit'), forceRender: true, children: <SQLAuditTab t={t} form={form} /> },
+                { key: 'weakAuth', label: t('settingsSectionWeakAuth'), forceRender: true, children: <WeakAuthTab t={t} /> },
                 { key: 'ai', label: t('aiPageTitle'), forceRender: true, children: <AITab t={t} form={form} config={config} /> },
                 { key: 'kafka', label: t('settingsSectionKafka'), forceRender: true, children: <KafkaTab t={t} form={form} /> },
                 { key: 'channels', label: t('settingsSectionChannels'), forceRender: true, children: <ChannelsTab t={t} /> },
@@ -116,9 +123,20 @@ type T = ReturnType<typeof useT>
 
 function GeneralTab({ t }: { t: T }) {
   return (
-    <Form.Item label={t('settingsRefreshInterval')} name="refreshIntervalMs" rules={[{ required: true }]} extra={t('settingsRefreshIntervalHint')}>
-      <InputNumber min={1} style={{ width: '100%' }} />
-    </Form.Item>
+    <>
+      <Form.Item label={t('settingsLanguage')} name="language" rules={[{ required: true }]}>
+        <Select
+          style={{ width: 240 }}
+          options={[
+            { value: 'zh', label: '简体中文' },
+            { value: 'en', label: 'English' },
+          ]}
+        />
+      </Form.Item>
+      <Form.Item label={t('settingsRefreshInterval')} name="refreshIntervalMs" rules={[{ required: true }]} extra={t('settingsRefreshIntervalHint')}>
+        <InputNumber min={1} style={{ width: '100%' }} />
+      </Form.Item>
+    </>
   )
 }
 
@@ -199,7 +217,205 @@ function CapacityTab({ t }: { t: T }) {
   )
 }
 
+function SQLAuditTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
+  const sqlAuditEnabled = Form.useWatch('sqlAuditEnabled', form)
+
+  return (
+    <>
+      <Form.Item label={t('settingsSQLAuditEnabled')} name="sqlAuditEnabled" valuePropName="checked" extra={t('settingsSQLAuditEnabledHint')}>
+        <Switch />
+      </Form.Item>
+      <Form.Item
+        label={t('settingsSQLAuditMaxPerTick')}
+        name="sqlAuditMaxPerTick"
+        rules={sqlAuditEnabled ? [{ required: true }] : []}
+        extra={t('settingsSQLAuditMaxPerTickHint')}
+      >
+        <InputNumber min={1} style={{ width: '100%' }} disabled={!sqlAuditEnabled} />
+      </Form.Item>
+    </>
+  )
+}
+
+function WeakAuthTab({ t }: { t: T }) {
+  const [entries, setEntries] = useState<WeakPasswordDictEntry[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(10)
+  const [q, setQ] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [importing, setImporting] = useState(false)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await getWeakPasswordDictPaged(page, pageSize, q)
+      setEntries(res.entries)
+      setTotal(res.total)
+    } catch (err) {
+      message.error(t('fetchFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setLoading(false)
+    }
+  }, [t, page, pageSize, q])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  async function handleDelete(entry: WeakPasswordDictEntry) {
+    try {
+      await deleteWeakPasswordDictEntry(entry.id)
+      message.success(t('weakAuthDictDeleteButton'))
+      refresh()
+    } catch (err) {
+      message.error(t('weakAuthDictActionFailed') + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
+  const columns: ColumnsType<WeakPasswordDictEntry> = [
+    { title: t('weakAuthDictColValue'), dataIndex: 'value' },
+    {
+      title: t('weakAuthDictColActions'),
+      key: 'actions',
+      width: 100,
+      render: (_, entry) => (
+        <Popconfirm title={t('weakAuthDictDeleteConfirm')} onConfirm={() => handleDelete(entry)} okText={t('weakAuthDictDeleteButton')} cancelText={t('ipTagsCancel')} okButtonProps={{ danger: true }}>
+          <Button type="link" size="small" danger>
+            {t('weakAuthDictDeleteButton')}
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ]
+
+  return (
+    <>
+      <Form.Item label={t('settingsWeakAuthEnabled')} name="weakAuthEnabled" valuePropName="checked" extra={t('settingsWeakAuthEnabledHint')}>
+        <Switch />
+      </Form.Item>
+
+      <Divider titlePlacement="left">{t('weakAuthDictSectionTitle')}</Divider>
+      <p className="settings-section-desc">{t('weakAuthDictSectionDesc')}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Input.Search
+          placeholder={t('weakAuthDictSearchPlaceholder')}
+          style={{ width: 260 }}
+          onSearch={(v) => {
+            setPage(0)
+            setQ(v)
+          }}
+          allowClear
+        />
+        <div>
+          <Button size="small" onClick={() => setImporting(true)} style={{ marginRight: 8 }}>
+            {t('weakAuthDictImportButton')}
+          </Button>
+          <Button type="primary" size="small" onClick={() => setAdding(true)}>
+            {t('weakAuthDictCreateButton')}
+          </Button>
+        </div>
+      </div>
+      <div className="compact-table">
+        <Table rowKey="id" columns={columns} dataSource={loading ? [] : entries} loading={loading} size="small" pagination={false} />
+      </div>
+      <DataPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={(p, ps) => {
+          setPage(p)
+          setPageSize(ps)
+        }}
+        t={t}
+      />
+
+      {adding && (
+        <WeakPasswordAddModal
+          t={t}
+          onDone={() => {
+            setAdding(false)
+            refresh()
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      )}
+      {importing && (
+        <WeakPasswordImportModal
+          t={t}
+          onDone={() => {
+            setImporting(false)
+            refresh()
+          }}
+          onCancel={() => setImporting(false)}
+        />
+      )}
+    </>
+  )
+}
+
+function WeakPasswordAddModal({ t, onDone, onCancel }: { t: T; onDone: () => void; onCancel: () => void }) {
+  const [form] = Form.useForm<{ value: string }>()
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleFinish(values: { value: string }) {
+    setSubmitting(true)
+    try {
+      await createWeakPasswordDictEntry(values.value)
+      onDone()
+    } catch (err) {
+      message.error(t('weakAuthDictActionFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title={t('weakAuthDictCreateTitle')} open onCancel={onCancel} onOk={() => form.submit()} confirmLoading={submitting} okText={t('ipTagsSave')} cancelText={t('ipTagsCancel')}>
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
+        <Form.Item label={t('weakAuthDictColValue')} name="value" rules={[{ required: true }]}>
+          <Input autoFocus />
+        </Form.Item>
+      </Form>
+    </Modal>
+  )
+}
+
+function WeakPasswordImportModal({ t, onDone, onCancel }: { t: T; onDone: () => void; onCancel: () => void }) {
+  const [text, setText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit() {
+    const values = text
+      .split('\n')
+      .map((v) => v.trim())
+      .filter((v) => v !== '')
+    if (values.length === 0) {
+      message.error(t('weakAuthDictImportEmpty'))
+      return
+    }
+    setSubmitting(true)
+    try {
+      const res = await importWeakPasswordDict(values)
+      message.success(t('weakAuthDictImportSuccess', { n: res.imported }))
+      onDone()
+    } catch (err) {
+      message.error(t('weakAuthDictActionFailed') + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal title={t('weakAuthDictImportTitle')} open onCancel={onCancel} onOk={handleSubmit} confirmLoading={submitting} okText={t('weakAuthDictImportButton')} cancelText={t('ipTagsCancel')}>
+      <Input.TextArea rows={10} value={text} onChange={(e) => setText(e.target.value)} placeholder={t('weakAuthDictImportPlaceholder')} />
+    </Modal>
+  )
+}
+
 function AITab({ t, form, config }: { t: T; form: FormInstance<ConfigDTO>; config: ConfigDTO }) {
+  const { language } = useI18n()
   const [testing, setTesting] = useState(false)
   const [provider, setProvider] = useState<AIProvider>('')
 
@@ -296,7 +512,7 @@ function AITab({ t, form, config }: { t: T; form: FormInstance<ConfigDTO>; confi
             { value: '', label: t('aiProviderSelectPlaceholder') },
             ...Object.entries(AI_PRESETS)
               .filter(([key]) => key !== 'custom')
-              .map(([key, p]) => ({ value: key, label: p.label })),
+              .map(([key, p]) => ({ value: key, label: language === 'en' ? p.labelEn : p.label })),
             { value: 'custom', label: t('aiProviderCustom') },
           ]}
         />
@@ -337,7 +553,7 @@ function KafkaTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
     setTesting(true)
     try {
       const res = await testKafka(kafkaBrokers, kafkaTopic, kafkaSaslUsername ?? '', kafkaSaslPassword ?? '', kafkaTls ?? false)
-      message.success(t('kafkaTestSuccess') + `（${res.partitions} 个分区）`)
+      message.success(t('kafkaTestSuccess') + t('kafkaTestPartitionsSuffix', { n: res.partitions }))
     } catch (err) {
       message.error(t('kafkaTestFailed') + (err instanceof Error ? err.message : String(err)))
     } finally {
@@ -745,18 +961,18 @@ function AssetTagsTab({ t }: { t: T }) {
         </Button>
       </div>
       <div className="compact-table">
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={tags}
-          loading={loading}
-          size="small"
-          pagination={tablePagination(page, pageSize, total, (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
-          }, t)}
-        />
+        <Table rowKey="id" columns={columns} dataSource={loading ? [] : tags} loading={loading} size="small" pagination={false} />
       </div>
+      <DataPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={(p, ps) => {
+          setPage(p)
+          setPageSize(ps)
+        }}
+        t={t}
+      />
 
       {editing && (
         <IPTagFormModal
@@ -914,18 +1130,18 @@ function IOCTab({ t }: { t: T }) {
         </div>
       </div>
       <div className="compact-table">
-        <Table
-          rowKey="id"
-          columns={columns}
-          dataSource={entries}
-          loading={loading}
-          size="small"
-          pagination={tablePagination(page, pageSize, total, (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
-          }, t)}
-        />
+        <Table rowKey="id" columns={columns} dataSource={loading ? [] : entries} loading={loading} size="small" pagination={false} />
       </div>
+      <DataPagination
+        page={page}
+        pageSize={pageSize}
+        total={total}
+        onPageChange={(p, ps) => {
+          setPage(p)
+          setPageSize(ps)
+        }}
+        t={t}
+      />
 
       {editing && (
         <IOCFormModal
@@ -1037,7 +1253,18 @@ function IOCImportModal({ t, onDone, onCancel }: { t: T; onDone: () => void; onC
         {t('iocDownloadTemplate')}
       </a>
       <div style={{ marginTop: 12 }}>
-        <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <Upload
+          accept=".xlsx"
+          maxCount={1}
+          fileList={file ? [{ uid: '1', name: file.name, status: 'done' } as UploadFile] : []}
+          beforeUpload={(f) => {
+            setFile(f)
+            return false
+          }}
+          onRemove={() => setFile(null)}
+        >
+          <Button icon={<UploadOutlined />}>{t('iocChooseFileButton')}</Button>
+        </Upload>
       </div>
       <p className="settings-section-desc" style={{ marginTop: 8 }}>
         {t('iocImportHint')}

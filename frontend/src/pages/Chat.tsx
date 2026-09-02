@@ -6,14 +6,15 @@ import { createChatSession, deleteChatSession, listChatMessages, listChatSession
 import type { ChatMessage, ChatSession } from '../api/types'
 import { renderMarkdownLite } from '../lib/markdownLite'
 
-const TOOL_LABELS: Record<string, string> = {
-  get_traffic_report: '流量总览',
-  get_timeseries: '流量趋势',
-  get_threat_alerts: '威胁告警',
-  get_flows: '流量明细',
+const TOOL_LABEL_KEY: Record<string, 'aiToolTrafficReport' | 'aiToolTimeseries' | 'aiToolThreatAlerts' | 'aiToolFlows'> = {
+  get_traffic_report: 'aiToolTrafficReport',
+  get_timeseries: 'aiToolTimeseries',
+  get_threat_alerts: 'aiToolThreatAlerts',
+  get_flows: 'aiToolFlows',
 }
-function toolLabel(name: string): string {
-  return TOOL_LABELS[name] ?? name
+function toolLabel(name: string, t: ReturnType<typeof useT>): string {
+  const key = TOOL_LABEL_KEY[name]
+  return key ? t(key) : name
 }
 
 function MessageMeta({ t, m }: { t: ReturnType<typeof useT>; m: ChatMessage }) {
@@ -24,7 +25,7 @@ function MessageMeta({ t, m }: { t: ReturnType<typeof useT>; m: ChatMessage }) {
     <div className="ai-chat-meta">
       {hasTools && m.toolCalls!.map((name) => (
         <Tag key={name} color="cyan" icon={<ToolOutlined />}>
-          {toolLabel(name)}
+          {toolLabel(name, t)}
         </Tag>
       ))}
       {m.model && (
@@ -255,7 +256,7 @@ export function Chat({ aiEnabled }: { aiEnabled: boolean }) {
             <div className="ai-chat-bubble assistant">
               {streamingTool ? (
                 <div className="ai-chat-tool-indicator">
-                  {t('aiChatUsingTool', { name: toolLabel(streamingTool) })}
+                  {t('aiChatUsingTool', { name: toolLabel(streamingTool, t) })}
                   <span className="ai-chat-elapsed">{t('aiChatElapsed', { sec: elapsedSec })}</span>
                 </div>
               ) : null}

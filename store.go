@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
@@ -70,6 +73,7 @@ func NewStore(path string, retention time.Duration, hotPeriod time.Duration) (*S
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	ensureSQLAuditDedup(db)
 	if err := ensureAppConfigCapacityColumns(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate app_config: %w", err)
@@ -123,8 +127,49 @@ func createSchema(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_threat_alerts_ts ON threat_alerts(ts)`,
 
+		`CREATE TABLE IF NOT EXISTS sql_audit_samples (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			db_type TEXT NOT NULL,
+			src_ip INTEGER NOT NULL,
+			src_port INTEGER NOT NULL,
+			dst_ip INTEGER NOT NULL,
+			dst_port INTEGER NOT NULL,
+			query_text TEXT NOT NULL,
+			truncated INTEGER NOT NULL DEFAULT 0,
+			count INTEGER NOT NULL DEFAULT 1
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_sql_audit_ts ON sql_audit_samples(ts)`,
+
+		`CREATE TABLE IF NOT EXISTS weak_password_dict (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			value TEXT NOT NULL UNIQUE,
+			created_at INTEGER NOT NULL
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS weak_auth_findings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			src_ip INTEGER NOT NULL,
+			src_port INTEGER NOT NULL,
+			dst_ip INTEGER NOT NULL,
+			dst_port INTEGER NOT NULL,
+			username TEXT NOT NULL,
+			password_enc BLOB NOT NULL,
+			matched_rule TEXT NOT NULL,
+			confidence TEXT NOT NULL,
+			status_code INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_weak_auth_ts ON weak_auth_findings(ts)`,
+
+		`CREATE TABLE IF NOT EXISTS weak_auth_secret (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			secret BLOB NOT NULL
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS app_config (
 			id INTEGER PRIMARY KEY CHECK (id = 1),
+			language TEXT NOT NULL DEFAULT 'zh',
 			refresh_interval_ms INTEGER NOT NULL,
 			persist_scan_alerts INTEGER NOT NULL,
 			db_flow_topk INTEGER NOT NULL DEFAULT 2000,
@@ -138,7 +183,9 @@ func createSchema(db *sql.DB) error {
 			ai_provider TEXT NOT NULL DEFAULT '',
 			ai_base_url TEXT NOT NULL DEFAULT '',
 			ai_api_key TEXT NOT NULL DEFAULT '',
-			ai_model TEXT NOT NULL DEFAULT ''
+			ai_model TEXT NOT NULL DEFAULT '',
+			sql_audit_enabled INTEGER NOT NULL DEFAULT 0,
+			sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS alert_webhooks (
@@ -246,6 +293,73 @@ func ensureIncrementalVacuum(db *sql.DB) error {
 	return nil
 }
 
+func ensureSQLAuditDedup(db *sql.DB) {
+	existing, err := columnNames(db, "sql_audit_samples")
+	if err != nil {
+		log.Printf("store: read sql_audit_samples columns failed, skipping dedup migration: %v", err)
+		return
+	}
+	if !existing["count"] {
+		if _, err := db.Exec(`ALTER TABLE sql_audit_samples ADD COLUMN count INTEGER NOT NULL DEFAULT 1`); err != nil {
+			log.Printf("store: add sql_audit_samples.count failed, skipping dedup migration: %v", err)
+			return
+		}
+	}
+
+	var indexExists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_sql_audit_dedup'`).Scan(&indexExists); err != nil {
+		log.Printf("store: check sql_audit dedup index failed, skipping dedup migration: %v", err)
+		return
+	}
+	if indexExists > 0 {
+		return
+	}
+
+	go runSQLAuditDedup(db)
+}
+
+func runSQLAuditDedup(db *sql.DB) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		log.Printf("store: acquire connection for sql_audit dedup failed: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	log.Printf("store: consolidating sql_audit_samples duplicates in the background (one-time; large tables may take a while)")
+
+	if _, err := conn.ExecContext(ctx, `
+		CREATE TEMP TABLE IF NOT EXISTS sql_audit_agg AS
+		SELECT MAX(id) AS id, COUNT(*) AS cnt FROM sql_audit_samples
+		GROUP BY db_type, src_ip, dst_ip, dst_port, query_text
+	`); err != nil {
+		log.Printf("store: build sql_audit_samples dedup snapshot failed, skipping dedup migration: %v", err)
+		return
+	}
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE sql_audit_samples SET count = (
+			SELECT cnt FROM sql_audit_agg WHERE sql_audit_agg.id = sql_audit_samples.id
+		)
+		WHERE id IN (SELECT id FROM sql_audit_agg)
+	`); err != nil {
+		log.Printf("store: consolidate sql_audit_samples duplicates failed: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `DELETE FROM sql_audit_samples WHERE id NOT IN (SELECT id FROM sql_audit_agg)`); err != nil {
+		log.Printf("store: dedupe sql_audit_samples failed: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS sql_audit_agg`); err != nil {
+		log.Printf("store: drop sql_audit_agg temp table failed: %v", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_sql_audit_dedup ON sql_audit_samples(db_type, src_ip, dst_ip, dst_port, query_text)`); err != nil {
+		log.Printf("store: create sql_audit dedup index failed, dedup will stay disabled until this is resolved: %v", err)
+		return
+	}
+	log.Printf("store: sql_audit_samples dedup migration complete in %s", time.Since(start))
+}
+
 func ensureAppConfigCapacityColumns(db *sql.DB) error {
 	existing, err := columnNames(db, "app_config")
 	if err != nil {
@@ -255,6 +369,7 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 	hadLegacyScanColumns := existing["scan_window_sec"]
 
 	for _, col := range []struct{ name, ddl string }{
+		{"language", "ALTER TABLE app_config ADD COLUMN language TEXT NOT NULL DEFAULT 'zh'"},
 		{"db_flow_topk", "ALTER TABLE app_config ADD COLUMN db_flow_topk INTEGER NOT NULL DEFAULT 2000"},
 		{"topk_per_bucket", "ALTER TABLE app_config ADD COLUMN topk_per_bucket INTEGER NOT NULL DEFAULT 200"},
 		{"anomaly_enabled", "ALTER TABLE app_config ADD COLUMN anomaly_enabled INTEGER NOT NULL DEFAULT 0"},
@@ -274,6 +389,8 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 		{"kafka_sasl_password", "ALTER TABLE app_config ADD COLUMN kafka_sasl_password TEXT NOT NULL DEFAULT ''"},
 		{"kafka_tls", "ALTER TABLE app_config ADD COLUMN kafka_tls INTEGER NOT NULL DEFAULT 0"},
 		{"kafka_flow_topk", "ALTER TABLE app_config ADD COLUMN kafka_flow_topk INTEGER NOT NULL DEFAULT 0"},
+		{"sql_audit_enabled", "ALTER TABLE app_config ADD COLUMN sql_audit_enabled INTEGER NOT NULL DEFAULT 0"},
+		{"sql_audit_max_per_tick", "ALTER TABLE app_config ADD COLUMN sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500"},
 	} {
 		if existing[col.name] {
 			continue
@@ -459,16 +576,18 @@ func ensureThreatAlertsSchema(db *sql.DB) error {
 }
 
 func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
-	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS int
-	row := s.db.QueryRow(`SELECT refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
+	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS, sqlAuditEnabled int
+	row := s.db.QueryRow(`SELECT language, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
-		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk
+		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
+		sql_audit_enabled, sql_audit_max_per_tick
 		FROM app_config WHERE id = 1`)
-	if err := row.Scan(&dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
+	if err := row.Scan(&dto.Language, &dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
 		&anomalyEnabled, &dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
 		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel,
-		&kafkaEnabled, &dto.KafkaBrokers, &dto.KafkaTopic, &dto.KafkaSASLUsername, &dto.KafkaSASLPassword, &kafkaTLS, &dto.KafkaFlowTopK); err != nil {
+		&kafkaEnabled, &dto.KafkaBrokers, &dto.KafkaTopic, &dto.KafkaSASLUsername, &dto.KafkaSASLPassword, &kafkaTLS, &dto.KafkaFlowTopK,
+		&sqlAuditEnabled, &dto.SQLAuditMaxPerTick); err != nil {
 		if err == sql.ErrNoRows {
 			return ConfigDTO{}, false, nil
 		}
@@ -479,10 +598,15 @@ func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
 	dto.AIEnabled = aiEnabled != 0
 	dto.KafkaEnabled = kafkaEnabled != 0
 	dto.KafkaTLS = kafkaTLS != 0
+	dto.SQLAuditEnabled = sqlAuditEnabled != 0
 	return dto, true, nil
 }
 
 func (s *Store) SaveConfig(dto ConfigDTO) error {
+	lang := LangZH
+	if dto.Language == LangEN {
+		lang = LangEN
+	}
 	persistScanAlerts := 0
 	if dto.PersistScanAlerts {
 		persistScanAlerts = 1
@@ -503,16 +627,22 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	if dto.KafkaTLS {
 		kafkaTLS = 1
 	}
+	sqlAuditEnabled := 0
+	if dto.SQLAuditEnabled {
+		sqlAuditEnabled = 1
+	}
 	res, err := s.db.Exec(`UPDATE app_config SET
-		refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
+		language = ?, refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
 		anomaly_enabled = ?, anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
 		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?,
-		kafka_enabled = ?, kafka_brokers = ?, kafka_topic = ?, kafka_sasl_username = ?, kafka_sasl_password = ?, kafka_tls = ?, kafka_flow_topk = ?
+		kafka_enabled = ?, kafka_brokers = ?, kafka_topic = ?, kafka_sasl_username = ?, kafka_sasl_password = ?, kafka_tls = ?, kafka_flow_topk = ?,
+		sql_audit_enabled = ?, sql_audit_max_per_tick = ?
 		WHERE id = 1`,
-		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
+		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
-		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK)
+		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
+		sqlAuditEnabled, dto.SQLAuditMaxPerTick)
 	if err != nil {
 		return fmt.Errorf("update app_config: %w", err)
 	}
@@ -521,15 +651,17 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	}
 
 	_, err = s.db.Exec(`INSERT INTO app_config(
-		id, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
+		id, language, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
-		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
+		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
+		sql_audit_enabled, sql_audit_max_per_tick
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
-		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK)
+		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
+		sqlAuditEnabled, dto.SQLAuditMaxPerTick)
 	if err != nil {
 		return fmt.Errorf("insert app_config: %w", err)
 	}
@@ -1079,7 +1211,7 @@ type BootstrapResult struct {
 	DashboardPassword string
 }
 
-func (s *Store) BootstrapAdminIfEmpty() (result BootstrapResult, created bool, err error) {
+func (s *Store) BootstrapAdminIfEmpty(lang string) (result BootstrapResult, created bool, err error) {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
 		return BootstrapResult{}, false, err
@@ -1103,8 +1235,9 @@ func (s *Store) BootstrapAdminIfEmpty() (result BootstrapResult, created bool, e
 	if err != nil {
 		return BootstrapResult{}, false, fmt.Errorf("hash bootstrap dashboard password: %w", err)
 	}
+	description := bi(lang, "自动创建，专用于大屏投放/自动登录场景，会话长期有效", "Auto-created for big-screen display / unattended login, long-lived session")
 	if _, err := s.db.Exec(`INSERT INTO users(username, password_hash, role, created_at, description, long_lived) VALUES (?, ?, 'normal', ?, ?, 1)`,
-		"dashboard", dashboardHash, time.Now().Unix(), "自动创建，专用于大屏投放/自动登录场景，会话长期有效"); err != nil {
+		"dashboard", dashboardHash, time.Now().Unix(), description); err != nil {
 		return BootstrapResult{}, false, fmt.Errorf("insert bootstrap dashboard account: %w", err)
 	}
 
@@ -1318,7 +1451,7 @@ func (s *Store) retentionLoop() {
 func (s *Store) pruneOnce() {
 	cutoff := time.Now().Add(-s.retention).Unix()
 
-	tables := []string{"bucket_summary", "threat_alerts"}
+	tables := []string{"bucket_summary", "threat_alerts", "sql_audit_samples"}
 	if existing, err := tableNames(s.db); err == nil {
 		for _, legacy := range []string{"flow_samples", "ip_samples", "port_samples"} {
 			if existing[legacy] {
@@ -1585,7 +1718,7 @@ func (s *Store) QueryPortsPaged(from, to time.Time, page, pageSize int, filter s
 	return out, total, nil
 }
 
-func (s *Store) QueryServiceCategories(from, to time.Time) ([]CategoryStat, error) {
+func (s *Store) QueryServiceCategories(from, to time.Time, lang string) ([]CategoryStat, error) {
 	cutoff, upper := from.Unix(), to.Unix()
 	rows, err := s.ts.queryPorts(cutoff, upper)
 	if err != nil {
@@ -1599,7 +1732,7 @@ func (s *Store) QueryServiceCategories(from, to time.Time) ([]CategoryStat, erro
 		agg.Bytes += r.Bytes
 		portTotals[r.Key.Port] = agg
 	}
-	return buildCategoryStats(portTotals), nil
+	return buildCategoryStats(portTotals, lang), nil
 }
 
 func paginateSlice[T any](items []T, page, pageSize int) []T {
@@ -2120,4 +2253,380 @@ func scanThreatAlertRows(rows *sql.Rows) ([]ThreatAlertRecord, error) {
 		out = append(out, ThreatAlertRecord{Time: time.Unix(ts, 0), Kind: kind, IP: ipString(ip), DistinctPeers: dp, VolumeBytes: vb})
 	}
 	return out, rows.Err()
+}
+
+type SQLAuditRecordDB struct {
+	Time      time.Time `json:"time"`
+	DBType    string    `json:"dbType"`
+	SrcIP     string    `json:"srcIP"`
+	SrcPort   int       `json:"srcPort"`
+	DstIP     string    `json:"dstIP"`
+	DstPort   int       `json:"dstPort"`
+	QueryText string    `json:"queryText"`
+	Truncated bool      `json:"truncated"`
+	Count     int       `json:"count"`
+}
+
+func (s *Store) InsertSQLAuditRecords(records []SQLAuditRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sql audit insert: %w", err)
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO sql_audit_samples(ts, db_type, src_ip, src_port, dst_ip, dst_port, query_text, truncated, count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+		ON CONFLICT(db_type, src_ip, dst_ip, dst_port, query_text) DO UPDATE SET
+			ts = excluded.ts,
+			src_port = excluded.src_port,
+			truncated = excluded.truncated,
+			count = count + 1
+	`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare sql audit insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, r := range records {
+		truncated := 0
+		if r.Truncated {
+			truncated = 1
+		}
+		if _, err := stmt.Exec(r.Time.Unix(), r.DBType, r.SrcIP, r.SrcPort, r.DstIP, r.DstPort, r.QueryText, truncated); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("insert sql audit record: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func sqliteIPOctetExpr(col string) string {
+	return "(CAST(" + col + " & 255 AS TEXT) || '.' || CAST((" + col + " >> 8) & 255 AS TEXT) || '.' || CAST((" + col + " >> 16) & 255 AS TEXT) || '.' || CAST((" + col + " >> 24) & 255 AS TEXT))"
+}
+
+func (s *Store) QuerySQLAuditPaged(from, to time.Time, dbType, q string, page, pageSize int) ([]SQLAuditRecordDB, int, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+
+	where := "ts >= ? AND ts <= ?"
+	args := []any{from.Unix(), to.Unix()}
+	if dbType != "" {
+		where += " AND db_type = ?"
+		args = append(args, dbType)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (" + sqliteIPOctetExpr("src_ip") + " LIKE ? OR " + sqliteIPOctetExpr("dst_ip") + " LIKE ? OR query_text LIKE ?)"
+		args = append(args, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sql_audit_samples WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count sql audit samples: %w", err)
+	}
+
+	qArgs := append(append([]any{}, args...), pageSize, page*pageSize)
+	rows, err := s.db.Query(`SELECT ts, db_type, src_ip, src_port, dst_ip, dst_port, query_text, truncated, count FROM sql_audit_samples WHERE `+where+` ORDER BY ts DESC LIMIT ? OFFSET ?`, qArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query sql audit samples: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SQLAuditRecordDB
+	for rows.Next() {
+		var ts int64
+		var dbT, queryText string
+		var srcIP, dstIP uint32
+		var srcPort, dstPort, truncated, count int
+		if err := rows.Scan(&ts, &dbT, &srcIP, &srcPort, &dstIP, &dstPort, &queryText, &truncated, &count); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, SQLAuditRecordDB{
+			Time: time.Unix(ts, 0), DBType: dbT,
+			SrcIP: ipString(srcIP), SrcPort: srcPort,
+			DstIP: ipString(dstIP), DstPort: dstPort,
+			QueryText: queryText, Truncated: truncated != 0, Count: count,
+		})
+	}
+	return out, total, rows.Err()
+}
+
+func (s *Store) ClearSQLAuditSamples() error {
+	_, err := s.db.Exec(`DELETE FROM sql_audit_samples`)
+	return err
+}
+
+func (s *Store) EnsureWeakAuthSecret() ([]byte, error) {
+	var secret []byte
+	err := s.db.QueryRow(`SELECT secret FROM weak_auth_secret WHERE id = 1`).Scan(&secret)
+	if err == nil {
+		return secret, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, err
+	}
+	secret = make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generate weak auth secret: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO weak_auth_secret(id, secret) VALUES (1, ?)`, secret); err != nil {
+		return nil, fmt.Errorf("store weak auth secret: %w", err)
+	}
+	return secret, nil
+}
+
+func encryptWeakAuthPassword(key, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+}
+
+func decryptWeakAuthPassword(key, ciphertext []byte) (string, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(ciphertext) < gcm.NonceSize() {
+		return "", fmt.Errorf("weak auth ciphertext too short")
+	}
+	nonce, data := ciphertext[:gcm.NonceSize()], ciphertext[gcm.NonceSize():]
+	plaintext, err := gcm.Open(nil, nonce, data, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plaintext), nil
+}
+
+type WeakAuthFindingDB struct {
+	ID          int       `json:"id"`
+	Time        time.Time `json:"time"`
+	SrcIP       string    `json:"srcIP"`
+	SrcPort     int       `json:"srcPort"`
+	DstIP       string    `json:"dstIP"`
+	DstPort     int       `json:"dstPort"`
+	Username    string    `json:"username"`
+	MatchedRule string    `json:"matchedRule"`
+	Confidence  string    `json:"confidence"`
+	StatusCode  int       `json:"statusCode"`
+}
+
+func (s *Store) InsertWeakAuthFindings(findings []WeakAuthFinding, key []byte) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin weak auth insert: %w", err)
+	}
+	stmt, err := tx.Prepare(`INSERT INTO weak_auth_findings(ts, src_ip, src_port, dst_ip, dst_port, username, password_enc, matched_rule, confidence, status_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare weak auth insert: %w", err)
+	}
+	defer stmt.Close()
+	for _, f := range findings {
+		enc, err := encryptWeakAuthPassword(key, []byte(f.Password))
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("encrypt weak auth password: %w", err)
+		}
+		if _, err := stmt.Exec(f.Time.Unix(), f.SrcIP, f.SrcPort, f.DstIP, f.DstPort, f.Username, enc, f.MatchedRule, f.Confidence, f.StatusCode); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("insert weak auth finding: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, q string, page, pageSize int) ([]WeakAuthFindingDB, int, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+
+	where := "ts >= ? AND ts <= ?"
+	args := []any{from.Unix(), to.Unix()}
+	if confidence != "" {
+		where += " AND confidence = ?"
+		args = append(args, confidence)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (" + sqliteIPOctetExpr("src_ip") + " LIKE ? OR " + sqliteIPOctetExpr("dst_ip") + " LIKE ? OR username LIKE ?)"
+		args = append(args, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM weak_auth_findings WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count weak auth findings: %w", err)
+	}
+
+	qArgs := append(append([]any{}, args...), pageSize, page*pageSize)
+	rows, err := s.db.Query(`SELECT id, ts, src_ip, src_port, dst_ip, dst_port, username, matched_rule, confidence, status_code FROM weak_auth_findings WHERE `+where+` ORDER BY ts DESC LIMIT ? OFFSET ?`, qArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query weak auth findings: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WeakAuthFindingDB
+	for rows.Next() {
+		var id, srcPort, dstPort, statusCode int
+		var ts int64
+		var srcIP, dstIP uint32
+		var username, matchedRule, confidenceVal string
+		if err := rows.Scan(&id, &ts, &srcIP, &srcPort, &dstIP, &dstPort, &username, &matchedRule, &confidenceVal, &statusCode); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, WeakAuthFindingDB{
+			ID: id, Time: time.Unix(ts, 0),
+			SrcIP: ipString(srcIP), SrcPort: srcPort,
+			DstIP: ipString(dstIP), DstPort: dstPort,
+			Username: username, MatchedRule: matchedRule, Confidence: confidenceVal, StatusCode: statusCode,
+		})
+	}
+	return out, total, rows.Err()
+}
+
+func (s *Store) RevealWeakAuthPassword(id int, key []byte) (string, error) {
+	var enc []byte
+	if err := s.db.QueryRow(`SELECT password_enc FROM weak_auth_findings WHERE id = ?`, id).Scan(&enc); err != nil {
+		return "", err
+	}
+	return decryptWeakAuthPassword(key, enc)
+}
+
+type WeakPasswordDictEntry struct {
+	ID    int    `json:"id"`
+	Value string `json:"value"`
+}
+
+func (s *Store) ListWeakPasswordDict() ([]string, error) {
+	rows, err := s.db.Query(`SELECT value FROM weak_password_dict`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) QueryWeakPasswordDictPaged(page, pageSize int, q string) ([]WeakPasswordDictEntry, int, error) {
+	if page < 0 {
+		page = 0
+	}
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+	where := "1=1"
+	args := []any{}
+	if q != "" {
+		where += " AND value LIKE ?"
+		args = append(args, "%"+q+"%")
+	}
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM weak_password_dict WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	qArgs := append(append([]any{}, args...), pageSize, page*pageSize)
+	rows, err := s.db.Query(`SELECT id, value FROM weak_password_dict WHERE `+where+` ORDER BY value LIMIT ? OFFSET ?`, qArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []WeakPasswordDictEntry{}
+	for rows.Next() {
+		var e WeakPasswordDictEntry
+		if err := rows.Scan(&e.ID, &e.Value); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, e)
+	}
+	return out, total, rows.Err()
+}
+
+func (s *Store) CreateWeakPasswordDictEntry(value string) (WeakPasswordDictEntry, error) {
+	res, err := s.db.Exec(`INSERT INTO weak_password_dict(value, created_at) VALUES (?, ?)`, value, time.Now().Unix())
+	if err != nil {
+		return WeakPasswordDictEntry{}, fmt.Errorf("insert weak password dict entry: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return WeakPasswordDictEntry{}, err
+	}
+	return WeakPasswordDictEntry{ID: int(id), Value: value}, nil
+}
+
+func (s *Store) DeleteWeakPasswordDictEntry(id int) error {
+	_, err := s.db.Exec(`DELETE FROM weak_password_dict WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) BulkImportWeakPasswordDict(values []string) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO weak_password_dict(value, created_at) VALUES (?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	now := time.Now().Unix()
+	n := 0
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, err := stmt.Exec(v, now); err != nil {
+			return n, fmt.Errorf("insert weak password entry: %w", err)
+		}
+		n++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (s *Store) SeedWeakPasswordDictIfEmpty(defaults []string) error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM weak_password_dict`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	_, err := s.BulkImportWeakPasswordDict(defaults)
+	return err
 }

@@ -127,10 +127,19 @@ func testAIProvider(baseURL, apiKey, model string) error {
 }
 
 func summarizeAlertForNotify(cfg ConfigDTO, a ThreatAlert, ts time.Time) (string, error) {
-	prompt := fmt.Sprintf(
-		"以下是Netra刚触发的一条威胁感知告警的原始字段。用不超过2句话的中文说明这条告警可能意味着什么、以及建议的下一步排查动作。不要使用markdown格式，不要逐字复述下面的字段。\n类型：%s\nIP：%s\n%s\n时间：%s",
-		alertKindLabel(a.Kind), formatIPLabel(a.IP, a.Label), alertDetailLine(a), ts.Format("2006-01-02 15:04:05"),
-	)
+	lang := cfg.Language
+	var prompt string
+	if lang == LangEN {
+		prompt = fmt.Sprintf(
+			"Below are the raw fields of a threat alert Netra just triggered. In no more than 2 sentences of English, explain what this alert likely means and suggest the next investigation step. Do not use markdown formatting, and do not just restate the fields verbatim.\nType: %s\nIP: %s\n%s\nTime: %s",
+			alertKindLabel(a.Kind, lang), formatIPLabel(a.IP, a.Label), alertDetailLine(a, lang), ts.Format("2006-01-02 15:04:05"),
+		)
+	} else {
+		prompt = fmt.Sprintf(
+			"以下是Netra刚触发的一条威胁感知告警的原始字段。用不超过2句话的中文说明这条告警可能意味着什么、以及建议的下一步排查动作。不要使用markdown格式，不要逐字复述下面的字段。\n类型：%s\nIP：%s\n%s\n时间：%s",
+			alertKindLabel(a.Kind, lang), formatIPLabel(a.IP, a.Label), alertDetailLine(a, lang), ts.Format("2006-01-02 15:04:05"),
+		)
+	}
 	resp, err := chatCompletionOnce(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, []chatCompletionMessage{{Role: "user", Content: prompt}}, 0)
 	if err != nil {
 		return "", err
@@ -311,7 +320,28 @@ func executeToolCall(ctx context.Context, store *Store, ipTags *ipTagCache, iocL
 	}
 }
 
-func buildSystemPrompt(now time.Time) string {
+func buildSystemPrompt(now time.Time, lang string) string {
+	if lang == LangEN {
+		weekdays := [...]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+		return fmt.Sprintf(`You are Netra's traffic analysis assistant. Netra is an eBPF-based network traffic visibility tool; you can call tools to query the real traffic and threat-detection data it has collected and persisted, in order to answer the user's questions.
+
+Current time: %s (%s). Use this as the reference point when resolving relative time expressions like "today", "yesterday", "last week".
+
+Available tools:
+- get_traffic_report: traffic overview for a time range (totals, protocol breakdown, top flows/IPs/ports/domains)
+- get_timeseries: traffic trend over a time range (protocol-split time series, for spotting spikes)
+- get_threat_alerts: port-scan/suspected-DDoS/single-IP-high-traffic alerts within a time range
+- get_flows: specific five-tuple flow records within a time range, optionally filtered by IP, up to %d results
+
+Strict rules:
+1. Any answer involving concrete numbers (traffic volume, IPs, ports, alert counts, etc.) must first call the corresponding tool to get real data -- never fabricate or estimate.
+2. Tools return JSON; extract the key information and answer in clear, natural prose -- never paste raw JSON back to the user.
+3. When converting a time range to an absolute time for a tool call, always use RFC3339 format (e.g. 2026-07-30T00:00:00+08:00).
+4. You are not limited to Netra's own traffic data -- if the user asks a general question about network security, networking, programming, etc., answer normally using your own knowledge; do not refuse on the grounds that you can "only answer traffic-related questions." Only when a question specifically requires Netra's own collected traffic/alert data must you call a tool to get real data (rule 1) rather than guessing from knowledge.
+5. If IP-related data already includes a "label" field, that IP already has an asset tag configured -- use it directly. Only call an external tool (name starting with mcp_) for more detailed info (e.g. asset owner team, ticket history) when the user actually needs it and such a tool is available; don't call it repeatedly just to re-confirm the same information.
+6. Always reply in English, regardless of what language the user's question is written in.`,
+			now.Format(time.RFC3339), weekdays[now.Weekday()], toolResultLimit)
+	}
 	weekdays := [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 	return fmt.Sprintf(`你是Netra的流量分析助手。Netra是一款基于eBPF的网络流量可视化工具，你可以调用工具查询它采集并持久化的真实网络流量与威胁感知数据来回答用户问题。
 
@@ -328,7 +358,8 @@ func buildSystemPrompt(now time.Time) string {
 2. 工具返回的是JSON数据，请提炼关键信息、用简洁自然的语言组织回答，不要直接把原始JSON贴给用户。
 3. 时间范围换算成绝对时间传给工具时，统一使用RFC3339格式（如 2026-07-30T00:00:00+08:00）。
 4. 你不局限于回答Netra流量数据本身——用户问及网络安全、网络工程、编程等其他领域的一般性问题时，运用你自身的知识正常作答，不要以"只能回答流量相关问题"为由拒绝；只有当问题明确需要用到Netra采集的具体流量/告警数据时，才必须调用工具获取真实数据（规则1），不能凭知识编造。
-5. IP相关数据里如果已经带了label字段，说明这个IP已经配置了资产标签，直接使用即可；只有当用户需要更详细的信息（比如资产归属团队、工单记录）且有对应的外部工具（名字以mcp_开头）可用时，才需要额外调用外部工具查询，不要为了确认同一个信息重复调用。`,
+5. IP相关数据里如果已经带了label字段，说明这个IP已经配置了资产标签，直接使用即可；只有当用户需要更详细的信息（比如资产归属团队、工单记录）且有对应的外部工具（名字以mcp_开头）可用时，才需要额外调用外部工具查询，不要为了确认同一个信息重复调用。
+6. 始终用中文回复，不论用户提问用的是什么语言。`,
 		now.Format(time.RFC3339), weekdays[now.Weekday()], toolResultLimit)
 }
 

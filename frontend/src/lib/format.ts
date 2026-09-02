@@ -11,8 +11,13 @@ export function formatBytes(n: number): string {
   return v.toFixed(2) + units[i]
 }
 
-export function formatCount(n: number): string {
+export function formatCount(n: number, lang: 'zh' | 'en' = 'zh'): string {
   if (n < 10000) return Math.round(n).toLocaleString()
+  if (lang === 'en') {
+    if (n < 1e6) return (n / 1e3).toFixed(2) + 'K'
+    if (n < 1e9) return (n / 1e6).toFixed(2) + 'M'
+    return (n / 1e9).toFixed(2) + 'B'
+  }
   if (n < 1e8) return (n / 1e4).toFixed(2) + '万'
   if (n < 1e12) return (n / 1e8).toFixed(2) + '亿'
   return (n / 1e12).toFixed(2) + '万亿'
@@ -121,7 +126,7 @@ const CATEGORY_PALETTE = [
 ]
 
 export function categoryColor(category: string, index: number): string {
-  if (category === '其他') return '#8a7355'
+  if (category === '其他' || category === 'Other') return '#8a7355'
   return CATEGORY_PALETTE[index % CATEGORY_PALETTE.length]
 }
 
@@ -133,8 +138,19 @@ export function readableTextColor(hex: string): string {
   return luminance > 0.6 ? '#0a0b0f' : '#f5f7fa'
 }
 
-export function formatRemaining(expiresAt: string): string {
+export function formatRemaining(expiresAt: string, lang: 'zh' | 'en' = 'zh'): string {
   const ms = new Date(expiresAt).getTime() - Date.now()
+  if (lang === 'en') {
+    if (ms <= 0) return 'Expired'
+    const minutes = Math.floor(ms / 60000)
+    const hours = Math.floor(minutes / 60)
+    const days = Math.floor(hours / 24)
+    const years = Math.floor(days / 365)
+    if (years >= 1) return `${years}y`
+    if (days >= 1) return `${days}d`
+    if (hours >= 1) return `${hours}h ${minutes % 60}m`
+    return `${Math.max(1, minutes)}m`
+  }
   if (ms <= 0) return '已过期'
   const minutes = Math.floor(ms / 60000)
   const hours = Math.floor(minutes / 60)
@@ -151,12 +167,14 @@ export function flagIconSrc(iso2: string | undefined): string {
   return '/vendor/flags/' + iso2.toLowerCase() + '.svg'
 }
 
-let displayNames: Intl.DisplayNames | undefined
+const displayNamesCache: Partial<Record<'zh' | 'en', Intl.DisplayNames>> = {}
 
-export function countryName(code: string): string {
+export function countryName(code: string, lang: 'zh' | 'en' = 'zh'): string {
   if (!code) return code
+  let displayNames = displayNamesCache[lang]
   if (!displayNames) {
-    displayNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' })
+    displayNames = new Intl.DisplayNames([lang === 'en' ? 'en' : 'zh-CN'], { type: 'region' })
+    displayNamesCache[lang] = displayNames
   }
   try {
     return displayNames.of(code.toUpperCase()) ?? code

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Card, Col, Progress, Row, Statistic, Tag, Tooltip } from 'antd'
 import { CloudUploadOutlined, DatabaseOutlined, InfoCircleOutlined, LinkOutlined, ThunderboltOutlined, WifiOutlined } from '@ant-design/icons'
-import { useT } from '../i18n/context'
+import { useI18n, useT } from '../i18n/context'
 import { usePolling } from '../hooks/usePolling'
 import { getMonitorSnapshot } from '../api/client'
 import { formatBps, formatBytes, formatCount } from '../lib/format'
@@ -37,7 +37,7 @@ function cardTitle(icon: ReactNode, color: string, label: string): ReactNode {
 }
 
 export function Monitoring() {
-  const t = useT()
+  const { t, language } = useI18n()
   const { data, loading, error } = usePolling(getMonitorSnapshot, POLL_MS)
 
   return (
@@ -232,7 +232,7 @@ export function Monitoring() {
                       )}
                       {ifc.promiscEnabledByNetra && <Tag color="processing">{t('monitorIfacePromiscByNetra')}</Tag>}
                       <span className="settings-section-desc" style={{ margin: '0 0 0 auto' }}>
-                        {t('monitorIfaceRx')}: {formatCount(ifc.rxPPS)} pps / {formatBps(ifc.rxBPS)}
+                        {t('monitorIfaceRx')}: {formatCount(ifc.rxPPS, language)} pps / {formatBps(ifc.rxBPS)}
                       </span>
                     </div>
                   ))}

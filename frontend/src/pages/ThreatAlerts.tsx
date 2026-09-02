@@ -6,17 +6,15 @@ import { usePolling } from '../hooks/usePolling'
 import { usePagedState } from '../hooks/usePagedState'
 import { getThreatAlertsPaged } from '../api/client'
 import type { AlertKind, ThreatAlertRecord } from '../api/types'
-import { tablePagination } from '../lib/antdTable'
+import { DataPagination } from '../components/DataPagination'
 import { AlertKindBadge, AssetLabel } from '../lib/trafficColumns'
 import { formatBytes } from '../lib/format'
-
-const PAGE_SIZE_CEILING = 20
 
 export function ThreatAlerts() {
   const t = useT()
   const [ipFilter, setIpFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<AlertKind | ''>('')
-  const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState(PAGE_SIZE_CEILING)
+  const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState()
 
   const { data, loading } = usePolling(
     () => getThreatAlertsPaged(page, pageSize, ipFilter || undefined, kindFilter || undefined),
@@ -73,11 +71,12 @@ export function ThreatAlerts() {
         <Table
           rowKey={(a) => `${a.time}-${a.kind}-${a.ip}`}
           columns={columns}
-          dataSource={data?.alerts ?? []}
+          dataSource={loading ? [] : (data?.alerts ?? [])}
           loading={loading}
-          pagination={tablePagination(page, pageSize, data?.total ?? 0, onPageChange, t)}
+          pagination={false}
           size="small"
         />
+        <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} />
       </div>
     </div>
   )

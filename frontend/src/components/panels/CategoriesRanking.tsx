@@ -36,7 +36,7 @@ export function CategoriesRanking({ items }: { items: CategoryStat[] }) {
         },
         radar: {
           center: ['50%', '54%'],
-          radius: '62%',
+          radius: '54%',
           axisName: {
             formatter: (name: string) => `{c${Math.max(0, sorted.findIndex((c) => c.category === name))}|${name}}`,
             rich,

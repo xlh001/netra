@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useT } from '../../i18n/context'
+import { useI18n } from '../../i18n/context'
 import echarts, { guardZeroSizePaint } from '../../lib/echarts'
 import { COUNTRY_CENTROIDS, MAP_HUB, aggregateByCountry, stableVisualBytes, type CountryTotal } from '../../lib/geo'
 import { countryName, flagIconSrc, formatBytes } from '../../lib/format'
@@ -26,7 +26,7 @@ interface PeerEntry {
 }
 
 export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; topology: Topology | null; topFlows: FlowStat[] }) {
-  const t = useT()
+  const { t, language } = useI18n()
 
   const mapDivRef = useRef<HTMLDivElement>(null)
   const topoDivRef = useRef<HTMLDivElement>(null)
@@ -164,12 +164,12 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
           formatter: (p: { data?: { country: string; bytes: number; packets: number; ipCount: number } }) => {
             if (!p.data) return ''
             const flagTag = p.data.country ? `<img src="${flagIconSrc(p.data.country)}" style="width:14px;height:10px;vertical-align:middle;margin-right:4px;border-radius:1px;">` : ''
-            return `${flagTag}${countryName(p.data.country)}<br/>${formatBytes(p.data.bytes)}, ${p.data.packets.toLocaleString()}${t('packetsSuffix')}<br/>${p.data.ipCount} IP`
+            return `${flagTag}${countryName(p.data.country, language)}<br/>${formatBytes(p.data.bytes)}, ${p.data.packets.toLocaleString()}${t('packetsSuffix')}<br/>${p.data.ipCount} IP`
           },
         },
         series: [
           {
-            name: '流量方向',
+            name: t('geoSeriesFlowDirection'),
             type: 'lines',
             coordinateSystem: 'geo',
             zlevel: 1,
@@ -199,7 +199,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
             }),
           },
           {
-            name: '国家流量',
+            name: t('geoSeriesCountryTraffic'),
             type: 'effectScatter',
             coordinateSystem: 'geo',
             symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 4 + params.data.sizeQ * 22,
@@ -216,7 +216,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
               const lat = centroid ? centroid[1] : 0
               return {
                 id: c.country,
-                name: countryName(c.country),
+                name: countryName(c.country, language),
                 value: [lng, lat],
                 country: c.country,
                 bytes: c.bytes,
@@ -235,7 +235,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
             }),
           },
           {
-            name: '汇聚点',
+            name: t('geoSeriesHub'),
             type: 'effectScatter',
             coordinateSystem: 'geo',
             silent: true,
@@ -284,7 +284,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
 
     reconcileMode()
 
-  }, [geo, worldMapReady, topFlows])
+  }, [geo, worldMapReady, topFlows, language])
 
   function applyTopologyToChart(topo: Topology | null) {
     const topoChart = topoChartRef.current
@@ -495,7 +495,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
                   {mipCountry.country ? (
                     <>
                       <img className="flag-icon" src={flagIconSrc(mipCountry.country)} alt={mipCountry.country} onError={(e) => (e.currentTarget.style.display = 'none')} />
-                      {' ' + countryName(mipCountry.country)}
+                      {' ' + countryName(mipCountry.country, language)}
                     </>
                   ) : (
                     '--'
