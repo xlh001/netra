@@ -11,7 +11,7 @@
 
 <p align="center">One binary. Lightweight, high-performance. Observe your network with eBPF. Ask AI. Extend with MCP</p>
 
-<p align="center">🌍 <a href="README.md">English</a> · 简体中文</p>
+<p align="center"><a href="README.md">English</a></p>
 
 ## 介绍
 
