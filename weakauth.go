@@ -147,8 +147,8 @@ func handleWeakAuthEvent(raw []byte, m *weakAuthManager) {
 	}
 	saddr := binary.LittleEndian.Uint32(raw[0:4])
 	daddr := binary.LittleEndian.Uint32(raw[4:8])
-	sport := binary.LittleEndian.Uint16(raw[8:10])
-	dport := binary.LittleEndian.Uint16(raw[10:12])
+	sport := binary.BigEndian.Uint16(raw[8:10])
+	dport := binary.BigEndian.Uint16(raw[10:12])
 	payloadLen := binary.LittleEndian.Uint32(raw[12:16])
 	truncated := raw[16] != 0
 

@@ -271,10 +271,11 @@ func (exp *kafkaExporter) Close() {
 func flowSamplesToStats(samples []flowSample) []FlowStat {
 	out := make([]FlowStat, 0, len(samples))
 	for _, s := range samples {
-		service, dpi, svcOnSrc := resolveServiceForFlow(s.key.Sport, s.key.Dport, s.svcPort, s.dpiService)
+		srcPort, dstPort, svcPort := ntohs(s.key.Sport), ntohs(s.key.Dport), ntohs(s.svcPort)
+		service, dpi, svcOnSrc := resolveServiceForFlow(srcPort, dstPort, svcPort, s.dpiService)
 		out = append(out, FlowStat{
-			SrcIP: ipString(s.key.Saddr), SrcPort: s.key.Sport,
-			DstIP: ipString(s.key.Daddr), DstPort: s.key.Dport,
+			SrcIP: ipString(s.key.Saddr), SrcPort: srcPort,
+			DstIP: ipString(s.key.Daddr), DstPort: dstPort,
 			Proto: protoName(s.key.Proto), Service: service, DPI: dpi, SvcOnSrc: svcOnSrc,
 			Domain:  s.domain,
 			Packets: s.packets, Bytes: s.bytes,

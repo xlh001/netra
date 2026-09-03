@@ -185,7 +185,8 @@ func createSchema(db *sql.DB) error {
 			ai_api_key TEXT NOT NULL DEFAULT '',
 			ai_model TEXT NOT NULL DEFAULT '',
 			sql_audit_enabled INTEGER NOT NULL DEFAULT 0,
-			sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500
+			sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500,
+			weak_auth_enabled INTEGER NOT NULL DEFAULT 0
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS alert_webhooks (
@@ -391,6 +392,7 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 		{"kafka_flow_topk", "ALTER TABLE app_config ADD COLUMN kafka_flow_topk INTEGER NOT NULL DEFAULT 0"},
 		{"sql_audit_enabled", "ALTER TABLE app_config ADD COLUMN sql_audit_enabled INTEGER NOT NULL DEFAULT 0"},
 		{"sql_audit_max_per_tick", "ALTER TABLE app_config ADD COLUMN sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500"},
+		{"weak_auth_enabled", "ALTER TABLE app_config ADD COLUMN weak_auth_enabled INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if existing[col.name] {
 			continue
@@ -576,18 +578,18 @@ func ensureThreatAlertsSchema(db *sql.DB) error {
 }
 
 func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
-	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS, sqlAuditEnabled int
+	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS, sqlAuditEnabled, weakAuthEnabled int
 	row := s.db.QueryRow(`SELECT language, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
 		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
-		sql_audit_enabled, sql_audit_max_per_tick
+		sql_audit_enabled, sql_audit_max_per_tick, weak_auth_enabled
 		FROM app_config WHERE id = 1`)
 	if err := row.Scan(&dto.Language, &dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
 		&anomalyEnabled, &dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
 		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel,
 		&kafkaEnabled, &dto.KafkaBrokers, &dto.KafkaTopic, &dto.KafkaSASLUsername, &dto.KafkaSASLPassword, &kafkaTLS, &dto.KafkaFlowTopK,
-		&sqlAuditEnabled, &dto.SQLAuditMaxPerTick); err != nil {
+		&sqlAuditEnabled, &dto.SQLAuditMaxPerTick, &weakAuthEnabled); err != nil {
 		if err == sql.ErrNoRows {
 			return ConfigDTO{}, false, nil
 		}
@@ -599,6 +601,7 @@ func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
 	dto.KafkaEnabled = kafkaEnabled != 0
 	dto.KafkaTLS = kafkaTLS != 0
 	dto.SQLAuditEnabled = sqlAuditEnabled != 0
+	dto.WeakAuthEnabled = weakAuthEnabled != 0
 	return dto, true, nil
 }
 
@@ -631,18 +634,22 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	if dto.SQLAuditEnabled {
 		sqlAuditEnabled = 1
 	}
+	weakAuthEnabled := 0
+	if dto.WeakAuthEnabled {
+		weakAuthEnabled = 1
+	}
 	res, err := s.db.Exec(`UPDATE app_config SET
 		language = ?, refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
 		anomaly_enabled = ?, anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
 		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?,
 		kafka_enabled = ?, kafka_brokers = ?, kafka_topic = ?, kafka_sasl_username = ?, kafka_sasl_password = ?, kafka_tls = ?, kafka_flow_topk = ?,
-		sql_audit_enabled = ?, sql_audit_max_per_tick = ?
+		sql_audit_enabled = ?, sql_audit_max_per_tick = ?, weak_auth_enabled = ?
 		WHERE id = 1`,
 		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
 		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
-		sqlAuditEnabled, dto.SQLAuditMaxPerTick)
+		sqlAuditEnabled, dto.SQLAuditMaxPerTick, weakAuthEnabled)
 	if err != nil {
 		return fmt.Errorf("update app_config: %w", err)
 	}
@@ -655,13 +662,13 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
 		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
-		sql_audit_enabled, sql_audit_max_per_tick
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sql_audit_enabled, sql_audit_max_per_tick, weak_auth_enabled
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
 		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
-		sqlAuditEnabled, dto.SQLAuditMaxPerTick)
+		sqlAuditEnabled, dto.SQLAuditMaxPerTick, weakAuthEnabled)
 	if err != nil {
 		return fmt.Errorf("insert app_config: %w", err)
 	}
