@@ -246,7 +246,7 @@ func parseMySQLQueries(buf []byte, saddr uint32, sport uint16, daddr uint32, dpo
 		pos += 4 + pktLen
 
 		if len(body) >= 1 && (body[0] == 0x03 || body[0] == 0x16) {
-			raw := normalizeText(string(body[1:]))
+			raw := strings.TrimLeftFunc(normalizeText(string(body[1:])), func(r rune) bool { return r < 0x20 })
 			if looksLikeSetCommand(raw) {
 				continue
 			}

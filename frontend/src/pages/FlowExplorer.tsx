@@ -359,15 +359,13 @@ function SQLAuditTab({ range }: { range: TimeRange }) {
     { title: t('sqlAuditColType'), dataIndex: 'dbType', width: 100, render: (v: string) => <DBTypeBadge dbType={v} /> },
     {
       title: t('sqlAuditColSrc'),
-      key: 'src',
-      width: 180,
-      render: (_, r) => `${r.srcIP}:${r.srcPort}`,
+      dataIndex: 'srcIP',
+      width: 150,
     },
     {
       title: t('sqlAuditColDst'),
-      key: 'dst',
-      width: 180,
-      render: (_, r) => `${r.dstIP}:${r.dstPort}`,
+      dataIndex: 'dstIP',
+      width: 150,
     },
     {
       title: t('sqlAuditColQuery'),
