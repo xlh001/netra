@@ -17,7 +17,7 @@ export function CountriesRanking({ geo }: { geo: GeoReport | null }) {
           <span className="panel-head-title">{t('countriesTitle')}</span>
         </h2>
       </div>
-      <RankList items={items} labelFn={(it) => countryName(it.country, language)} color="#35e0ff" />
+      <RankList items={items} labelFn={(it) => countryName(it.country, language)} color="#4FD0C0" />
     </div>
   )
 }

@@ -77,7 +77,7 @@ export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | n
         yAxis: {
           type: 'value',
           axisLabel: { color: '#8b93a0', formatter: (v: number) => formatBytes(v) },
-          splitLine: { lineStyle: { color: '#232838' } },
+          splitLine: { show: false },
         },
         series,
       },
@@ -86,7 +86,7 @@ export function TrendChart({ timeseries, loading }: { timeseries: Timeseries | n
   }, [chartRef, timeseries])
 
   return (
-    <div className="panel" style={{ flex: 0.7 }}>
+    <div className="panel">
       <div className="panel-head">
         <h2>
           <span className="panel-head-title">{t('trendTitle')}</span>

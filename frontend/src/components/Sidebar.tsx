@@ -1,58 +1,44 @@
-import { useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
-import { AlertOutlined, ControlOutlined, DashboardOutlined, DownOutlined, RightOutlined, TableOutlined } from '@ant-design/icons'
+import { NavLink } from 'react-router-dom'
+import { AlertOutlined, AppstoreOutlined, DashboardOutlined, DesktopOutlined, SettingOutlined, TableOutlined, TeamOutlined } from '@ant-design/icons'
 import { useAuth } from '../auth/context'
 import { useT } from '../i18n/context'
 import { Logo } from './Logo'
 
 const MAIN_NAV_ITEMS = [
   { to: '/', key: 'navDashboard', end: true, icon: <DashboardOutlined /> },
+  { to: '/overview', key: 'navInsights', end: false, icon: <AppstoreOutlined /> },
   { to: '/flows', key: 'navFlows', end: false, icon: <TableOutlined /> },
   { to: '/threats', key: 'navThreats', end: false, icon: <AlertOutlined /> },
 ] as const
 
 const ADMIN_NAV_ITEMS = [
-  { to: '/settings', key: 'navSettings' },
-  { to: '/users', key: 'navUsers' },
-  { to: '/monitor', key: 'navMonitor' },
+  { to: '/settings', key: 'navSettings', icon: <SettingOutlined /> },
+  { to: '/users', key: 'navUsers', icon: <TeamOutlined /> },
+  { to: '/monitor', key: 'navMonitor', icon: <DesktopOutlined /> },
 ] as const
 
 export function Sidebar() {
   const t = useT()
   const { user } = useAuth()
-  const location = useLocation()
 
-  const [adminOpen, setAdminOpen] = useState(() => ADMIN_NAV_ITEMS.some((i) => i.to === location.pathname))
+  const items = user?.role === 'admin' ? [...MAIN_NAV_ITEMS, ...ADMIN_NAV_ITEMS] : MAIN_NAV_ITEMS
 
   return (
     <nav className="sidebar">
       <div className="sidebar-brand">
         <Logo />
-        <h1>Netra</h1>
       </div>
-      {MAIN_NAV_ITEMS.map((item) => (
-        <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}>
+      {items.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={'end' in item ? item.end : false}
+          className={({ isActive }) => 'nav-item' + (isActive ? ' active' : '')}
+        >
           {item.icon}
-          {t(item.key)}
+          <span className="nav-label">{t(item.key)}</span>
         </NavLink>
       ))}
-
-      {user?.role === 'admin' && (
-        <>
-          <button type="button" className="nav-group-toggle" onClick={() => setAdminOpen((o) => !o)}>
-            <ControlOutlined />
-            {t('navSystemMgmt')}
-            {adminOpen ? <DownOutlined className="chevron" /> : <RightOutlined className="chevron" />}
-          </button>
-          {adminOpen &&
-            ADMIN_NAV_ITEMS.map((item) => (
-              <NavLink key={item.to} to={item.to} className={({ isActive }) => 'nav-item sub' + (isActive ? ' active' : '')}>
-                {t(item.key)}
-              </NavLink>
-            ))}
-        </>
-      )}
-
       <div style={{ flex: 1 }} />
     </nav>
   )

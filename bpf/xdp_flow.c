@@ -91,6 +91,13 @@ struct {
 	__type(key, struct flow_key);
 	__type(value, __u8);
 	__uint(max_entries, 65536);
+} http_flags SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct flow_key);
+	__type(value, __u8);
+	__uint(max_entries, 65536);
 } sql_audit_flags SEC(".maps");
 
 #define SQL_AUDIT_CAPTURE_LEN 512
@@ -282,7 +289,7 @@ static __always_inline int looks_like_http_request(__u8 *p, void *data_end)
 
 static __always_inline void maybe_capture_http_host(struct xdp_md *ctx, void *data, void *data_end, const struct flow_key *key)
 {
-	if (key->proto != IPPROTO_TCP || key->dport != bpf_htons(80))
+	if (key->proto != IPPROTO_TCP)
 		return;
 
 	struct ethhdr *eth = data;
@@ -296,8 +303,17 @@ static __always_inline void maybe_capture_http_host(struct xdp_md *ctx, void *da
 		return;
 
 	void *payload = (void *)tcp + (tcp->doff * 4);
-	if (!looks_like_http_request(payload, data_end))
-		return;
+
+	if (!bpf_map_lookup_elem(&http_flags, key)) {
+		if (!looks_like_http_request(payload, data_end))
+			return;
+
+		__u8 flag = 1;
+		bpf_map_update_elem(&http_flags, key, &flag, BPF_ANY);
+
+		struct flow_key rev = {.saddr = key->daddr, .daddr = key->saddr, .sport = key->dport, .dport = key->sport, .proto = key->proto};
+		bpf_map_update_elem(&http_flags, &rev, &flag, BPF_ANY);
+	}
 
 	struct http_event *ev = bpf_ringbuf_reserve(&http_events, sizeof(*ev), 0);
 	if (!ev)
@@ -406,8 +422,6 @@ static __always_inline void maybe_capture_http_auth_payload(struct xdp_md *ctx, 
 {
 	if (key->proto != IPPROTO_TCP)
 		return;
-	if (key->dport != bpf_htons(80) && key->sport != bpf_htons(80))
-		return;
 
 	struct ethhdr *eth = data;
 	struct iphdr *ip = (void *)(eth + 1);
@@ -443,33 +457,57 @@ static __always_inline void maybe_capture_http_auth_payload(struct xdp_md *ctx, 
 	ev->sport = key->sport;
 	ev->dport = key->dport;
 
-	if (payload + HTTP_AUTH_CAPTURE_LEN <= data_end) {
-		__builtin_memcpy(ev->payload, payload, HTTP_AUTH_CAPTURE_LEN);
-		ev->payload_len = HTTP_AUTH_CAPTURE_LEN;
-	} else if (payload + 256 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 256);
-		ev->payload_len = 256;
-	} else if (payload + 128 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 128);
-		ev->payload_len = 128;
-	} else if (payload + 64 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 64);
-		ev->payload_len = 64;
-	} else if (payload + 32 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 32);
-		ev->payload_len = 32;
-	} else if (payload + 16 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 16);
-		ev->payload_len = 16;
-	} else if (payload + 4 <= data_end) {
-		__builtin_memcpy(ev->payload, payload, 4);
-		ev->payload_len = 4;
-	} else {
+	__u32 len = 0;
+
+#define HTTP_AUTH_TRY(n) \
+	if (!len && payload + (n) <= data_end) { \
+		__builtin_memcpy(ev->payload, payload, (n)); \
+		len = (n); \
+	}
+
+	HTTP_AUTH_TRY(512)
+	HTTP_AUTH_TRY(496)
+	HTTP_AUTH_TRY(480)
+	HTTP_AUTH_TRY(464)
+	HTTP_AUTH_TRY(448)
+	HTTP_AUTH_TRY(432)
+	HTTP_AUTH_TRY(416)
+	HTTP_AUTH_TRY(400)
+	HTTP_AUTH_TRY(384)
+	HTTP_AUTH_TRY(368)
+	HTTP_AUTH_TRY(352)
+	HTTP_AUTH_TRY(336)
+	HTTP_AUTH_TRY(320)
+	HTTP_AUTH_TRY(304)
+	HTTP_AUTH_TRY(288)
+	HTTP_AUTH_TRY(272)
+	HTTP_AUTH_TRY(256)
+	HTTP_AUTH_TRY(240)
+	HTTP_AUTH_TRY(224)
+	HTTP_AUTH_TRY(208)
+	HTTP_AUTH_TRY(192)
+	HTTP_AUTH_TRY(176)
+	HTTP_AUTH_TRY(160)
+	HTTP_AUTH_TRY(144)
+	HTTP_AUTH_TRY(128)
+	HTTP_AUTH_TRY(112)
+	HTTP_AUTH_TRY(96)
+	HTTP_AUTH_TRY(80)
+	HTTP_AUTH_TRY(64)
+	HTTP_AUTH_TRY(48)
+	HTTP_AUTH_TRY(32)
+	HTTP_AUTH_TRY(16)
+	HTTP_AUTH_TRY(8)
+	HTTP_AUTH_TRY(4)
+
+#undef HTTP_AUTH_TRY
+
+	if (!len) {
 		bpf_ringbuf_discard(ev, 0);
 		return;
 	}
-
-	ev->truncated = (payload + ev->payload_len < data_end) ? 1 : 0;
+	ev->payload_len = len;
+	ev->truncated = (payload + len < data_end) ? 1 : 0;
 
 	bpf_ringbuf_submit(ev, 0);
 }

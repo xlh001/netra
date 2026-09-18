@@ -11,8 +11,8 @@ export function RadarField() {
         </g>
         <defs>
           <linearGradient id="radarSweepGrad" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#35e0ff" stopOpacity="0" />
-            <stop offset="100%" stopColor="#35e0ff" stopOpacity="0.35" />
+            <stop offset="0%" stopColor="#4FD0C0" stopOpacity="0" />
+            <stop offset="100%" stopColor="#4FD0C0" stopOpacity="0.35" />
           </linearGradient>
         </defs>
       </svg>

@@ -8,6 +8,16 @@ function colorWithAlpha(rgbStr: string, alpha: number): string {
   return `rgba(${m[0]},${m[1]},${m[2]},${alpha})`
 }
 
+function hashString(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0
+  }
+  return h
+}
+
+const MAX_SCAN_DOTS = 8
+
 export function ScanRadar({ scanAlerts }: { scanAlerts: ThreatAlert[] | undefined }) {
   const t = useT()
   const elRef = useRef<HTMLDivElement>(null)
@@ -131,8 +141,25 @@ export function ScanRadar({ scanAlerts }: { scanAlerts: ThreatAlert[] | undefine
         </h2>
       </div>
       <div className={'scan-radar' + (active ? ' alert' : '')} ref={elRef}>
-        <canvas ref={canvasRef} />
-        {active && <div className="sr-status">{t('scanRadarAlert', { n: scanAlerts!.length })}</div>}
+        <div className="scan-radar-stage">
+          <canvas ref={canvasRef} />
+          {active && (
+            <svg className="scan-radar-dots" viewBox="0 0 100 100">
+              {scanAlerts!.slice(0, MAX_SCAN_DOTS).map((a, i) => {
+                const angle = (hashString(a.ip) % 360) * (Math.PI / 180)
+                const radius = 26 + (hashString(a.ip + ':r') % 20)
+                const cx = 50 + radius * Math.cos(angle)
+                const cy = 50 + radius * Math.sin(angle)
+                return <circle key={a.ip + i} cx={cx} cy={cy} r="2.6" className="scan-radar-dot" />
+              })}
+            </svg>
+          )}
+        </div>
+        {active && (
+          <div className="sr-status">
+            {scanAlerts!.length === 1 ? t('scanRadarAlertOne', { ip: scanAlerts![0].ip }) : t('scanRadarAlert', { n: scanAlerts!.length })}
+          </div>
+        )}
       </div>
     </div>
   )

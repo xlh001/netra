@@ -1,9 +1,10 @@
 
 import * as echarts from 'echarts/core'
 import type { ECharts } from 'echarts/core'
-import { EffectScatterChart, GraphChart, LineChart, LinesChart, MapChart, PieChart, RadarChart } from 'echarts/charts'
+import { EffectScatterChart, GraphChart, LineChart, LinesChart, MapChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts'
 import { GeoComponent, GridComponent, LegendComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { registerNetraEchartsTheme } from '../styles/theme'
 
 echarts.use([
   LineChart,
@@ -12,6 +13,7 @@ echarts.use([
   MapChart,
   LinesChart,
   EffectScatterChart,
+  ScatterChart,
   RadarChart,
   GridComponent,
   TooltipComponent,
@@ -20,6 +22,8 @@ echarts.use([
   RadarComponent,
   CanvasRenderer,
 ])
+
+registerNetraEchartsTheme(echarts)
 
 export function guardZeroSizePaint(chart: ECharts, el: HTMLElement): void {
   const hasSize = () => el.clientWidth > 0 && el.clientHeight > 0

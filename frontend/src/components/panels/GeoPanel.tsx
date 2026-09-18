@@ -1,15 +1,28 @@
 import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '../../i18n/context'
 import echarts, { guardZeroSizePaint } from '../../lib/echarts'
-import { COUNTRY_CENTROIDS, MAP_HUB, aggregateByCountry, stableVisualBytes, type CountryTotal } from '../../lib/geo'
+import { COUNTRY_CENTROIDS, aggregateByCountry, stableVisualBytes, type CountryTotal } from '../../lib/geo'
 import { countryName, flagIconSrc, formatBytes } from '../../lib/format'
 import type { FlowStat, GeoReport, Topology, TopologyNode } from '../../api/types'
 
 const MIP_CAROUSEL_TOP_N = 8
 const TIP_CAROUSEL_TOP_N = 8
-const TOPO_LABEL_TOP_N = 20
+const TOPO_LABEL_TOP_N = 28
+const MAP_POINT_TOP_N = 12
+const SERVER_MIN_DEGREE = 3
 const CARD_ROTATE_MS = 4000
-const GEO_ROTATE_MS = 25000
+// Ambient "bumper-ball" drift: on each tick every node takes a bounded
+// random-walk step, tweened smoothly, so the whole graph gently jostles (many
+// places moving at once) rather than sitting like a static picture.
+const TOPO_DRIFT_TICK_MS = 1500
+const TOPO_DRIFT_AMP = 20
+
+// Node positions persist across menu switches (component remounts) so that
+// re-entering the dashboard shows the topology already laid out instead of
+// re-converging from a wide spread every time. Nodes are seeded from these
+// (not pinned), so the force layout still nudges them slightly on each refresh
+// -- a live, breathing graph rather than a frozen image.
+const persistedTopoPos: Record<string, { x: number; y: number }> = {}
 
 interface FlowEntry {
   peer: string
@@ -25,7 +38,21 @@ interface PeerEntry {
   packets: number
 }
 
-export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; topology: Topology | null; topFlows: FlowStat[] }) {
+export function GeoPanel({
+  geo,
+  topology,
+  topFlows,
+  hero,
+  viewMode = 'auto',
+  switchIntervalSec = 25,
+}: {
+  geo: GeoReport | null
+  topology: Topology | null
+  topFlows: FlowStat[]
+  hero?: boolean
+  viewMode?: 'auto' | 'world' | 'topo'
+  switchIntervalSec?: number
+}) {
   const { t, language } = useI18n()
 
   const mapDivRef = useRef<HTMLDivElement>(null)
@@ -35,10 +62,20 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
 
   const [worldMapReady, setWorldMapReady] = useState(false)
   const [mode, setMode] = useState<'map' | 'topo'>('map')
+  const viewModeRef = useRef(viewMode)
+  viewModeRef.current = viewMode
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const lastTopoSigRef = useRef('')
+  // Per-node tiny offsets for the gentle "one leaf twitches" liveness, and a
+  // flag so the finished handler only persists BASE positions from real
+  // layouts (never the jittered ones -- otherwise the base would slowly drift).
+  const driftRef = useRef<Record<string, { dx: number; dy: number }>>({})
+  const structuralRenderRef = useRef(true)
+  const settledRef = useRef(false)
 
   const geoComponentAppliedRef = useRef(false)
   const visualBytesCacheRef = useRef(new Map<string, { bytes: number; ts: number }>())
-  const topoNodePosRef = useRef<Record<string, { x: number; y: number }>>({})
   const lastGeoEnabledRef = useRef(true)
   const lastMapHasTrafficRef = useRef(true)
   const lastTopoHasNodesRef = useRef(true)
@@ -77,12 +114,25 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
       const series = model?.getSeriesByIndex(0)
       const data = series?.getData()
       if (!data) return
+      // Skip persisting positions produced by a drift stir -- those include the
+      // per-node offsets and would let the base positions creep.
+      if (!structuralRenderRef.current) return
+      let maxDelta = 0
+      let count = 0
       for (let i = 0; i < data.count(); i++) {
         const layout = data.getItemLayout(i)
         if (layout && typeof layout[0] === 'number' && typeof layout[1] === 'number') {
-          topoNodePosRef.current[data.getId(i)] = { x: layout[0], y: layout[1] }
+          const id = data.getId(i)
+          const prev = persistedTopoPos[id]
+          if (prev) maxDelta = Math.max(maxDelta, Math.hypot(layout[0] - prev.x, layout[1] - prev.y))
+          persistedTopoPos[id] = { x: layout[0], y: layout[1] }
+          count++
         }
       }
+      // The force layout is "settled" only once consecutive finished frames
+      // barely move; the drift (pin + tween) must not start before then, or it
+      // would freeze half-converged positions and jump.
+      if (count > 0 && maxDelta < 1.5) settledRef.current = true
     })
 
     const onResize = () => {
@@ -109,6 +159,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
   }, [])
 
   function reconcileMode() {
+    if (viewModeRef.current !== 'auto') return
     setMode((cur) => {
       const mapHasSomething = lastGeoEnabledRef.current && lastMapHasTrafficRef.current
       if (cur === 'map' && !mapHasSomething && lastTopoHasNodesRef.current) return 'topo'
@@ -144,23 +195,43 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
         stableByCountry[c.country] = stableVisualBytes(cache, c.bytes, c.country)
       })
       const maxBytes = countries.reduce((m, c) => Math.max(m, stableByCountry[c.country]), 0) || 1
-      const minBytes = countries.reduce((m, c) => Math.min(m, stableByCountry[c.country]), maxBytes) || 1
-      const norm = (v: number) => {
-        const lo = Math.log(minBytes)
-        const hi = Math.log(maxBytes)
-        const x = Math.log(v || 1)
-        const raw = hi === lo ? 0.5 : Math.max(0, Math.min(1, (x - lo) / (hi - lo)))
 
-        return Math.round(raw * 20) / 20
-      }
+      const mapCountries = countries.slice(0, MAP_POINT_TOP_N)
+      const mapPointData = mapCountries.map((c) => {
+        const centroid = COUNTRY_CENTROIDS[c.country]
+        const lng = centroid ? centroid[0] : 0
+        const lat = centroid ? centroid[1] : 0
+        return {
+          id: c.country,
+          name: countryName(c.country, language),
+          value: [lng, lat],
+          country: c.country,
+          code: (c.country || '--').toUpperCase(),
+          bytes: c.bytes,
+          packets: c.packets,
+          ipCount: c.ipCount,
+          topIP: c.topIP,
+          sizeQ: Math.round(Math.sqrt(stableByCountry[c.country] / maxBytes) * 20) / 20,
+        }
+      })
+      const heatRegions = mapCountries.map((c) => {
+        const intensity = Math.sqrt(stableByCountry[c.country] / maxBytes)
+        return {
+          name: countryName(c.country, 'en'),
+          itemStyle: {
+            areaColor: `rgba(188, 131, 60, ${0.34 + intensity * 0.34})`,
+            borderColor: `rgba(232, 185, 105, ${0.32 + intensity * 0.34})`,
+          },
+        }
+      })
 
       const mapOption: Record<string, unknown> = {
         backgroundColor: 'transparent',
         tooltip: {
           trigger: 'item',
-          backgroundColor: '#131720',
-          borderColor: '#3d4250',
-          textStyle: { color: '#e2e6ea' },
+          backgroundColor: 'rgba(8,15,24,0.92)',
+          borderColor: 'rgba(201,163,91,0.3)',
+          textStyle: { color: '#ECE6D6' },
           formatter: (p: { data?: { country: string; bytes: number; packets: number; ipCount: number } }) => {
             if (!p.data) return ''
             const flagTag = p.data.country ? `<img src="${flagIconSrc(p.data.country)}" style="width:14px;height:10px;vertical-align:middle;margin-right:4px;border-radius:1px;">` : ''
@@ -169,83 +240,40 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
         },
         series: [
           {
-            name: t('geoSeriesFlowDirection'),
-            type: 'lines',
+            name: 'Traffic footprint',
+            type: 'effectScatter',
             coordinateSystem: 'geo',
-            zlevel: 1,
-            effect: { show: true, trailLength: 0.22, symbol: 'circle', color: '#ffe6f5' },
-            lineStyle: { color: '#35e0ff', curveness: 0.2 },
-            data: countries.map((c) => {
-              const centroid = COUNTRY_CENTROIDS[c.country]
-              const lng = centroid ? centroid[0] : 0
-              const lat = centroid ? centroid[1] : 0
-              const v = norm(stableByCountry[c.country])
-              const westOfHub = lng < MAP_HUB[0]
-              const gradStops = westOfHub
-                ? [{ offset: 0, color: '#35e0ff' }, { offset: 1, color: '#ff2e88' }]
-                : [{ offset: 0, color: '#ff2e88' }, { offset: 1, color: '#35e0ff' }]
-              return {
-                id: c.country,
-                coords: [MAP_HUB, [lng, lat]],
-                lineStyle: {
-                  color: new echarts.graphic.LinearGradient(0, 0, 1, 0, gradStops),
-
-                  width: 0.8 + v * 1.8,
-                  opacity: 0.15 + v * 0.2,
-                  curveness: c.country.charCodeAt(0) % 2 === 0 ? 0.2 : -0.2,
-                },
-                effect: { period: 2.4 - v * 1.2, symbolSize: 3 + v * 3 },
-              }
-            }),
+            zlevel: 2,
+            symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 26 + params.data.sizeQ * 34,
+            showEffectOn: 'render',
+            rippleEffect: { brushType: 'fill', scale: 1.55, period: 6 },
+            itemStyle: { color: 'rgba(232,168,75,0.11)', shadowBlur: 30, shadowColor: 'rgba(232,168,75,0.36)' },
+            label: { show: false },
+            emphasis: { disabled: true },
+            data: mapPointData,
           },
           {
             name: t('geoSeriesCountryTraffic'),
             type: 'effectScatter',
             coordinateSystem: 'geo',
-            symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 4 + params.data.sizeQ * 22,
+            zlevel: 3,
+            symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 16 + params.data.sizeQ * 26,
             showEffectOn: 'render',
-            rippleEffect: { brushType: 'stroke' },
-            itemStyle: { color: '#35e0ff', shadowBlur: 8, shadowColor: '#35e0ff' },
-            label: { show: false },
-
+            rippleEffect: { brushType: 'stroke', scale: 5, period: 4.5 },
+            itemStyle: { color: '#FF5D46', shadowBlur: 18, shadowColor: 'rgba(255,93,70,0.8)' },
+            label: {
+              show: true,
+              position: 'right',
+              distance: 10,
+              formatter: (p: { data: { code: string } }) => p.data.code,
+              color: '#F2A99C',
+              fontFamily: 'ui-monospace, "SF Mono", monospace',
+              fontSize: 16,
+              fontWeight: 700,
+            },
             labelLayout: { hideOverlap: true },
             emphasis: { disabled: true },
-            data: countries.map((c) => {
-              const centroid = COUNTRY_CENTROIDS[c.country]
-              const lng = centroid ? centroid[0] : 0
-              const lat = centroid ? centroid[1] : 0
-              return {
-                id: c.country,
-                name: countryName(c.country, language),
-                value: [lng, lat],
-                country: c.country,
-                bytes: c.bytes,
-                packets: c.packets,
-                ipCount: c.ipCount,
-                topIP: c.topIP,
-                sizeQ: Math.round(Math.sqrt(stableByCountry[c.country] / maxBytes) * 20) / 20,
-                label: {
-                  show: true,
-                  formatter: '{flag|}',
-                  position: 'right',
-                  distance: 6,
-                  rich: { flag: { height: 12, width: 16, backgroundColor: { image: flagIconSrc(c.country) } } },
-                },
-              }
-            }),
-          },
-          {
-            name: t('geoSeriesHub'),
-            type: 'effectScatter',
-            coordinateSystem: 'geo',
-            silent: true,
-            tooltip: { show: false },
-            symbol: 'circle',
-            symbolSize: 12,
-            showEffectOn: 'render',
-            rippleEffect: { period: 3, scale: 4, brushType: 'stroke' },
-            itemStyle: { color: 'rgba(255,207,92,0.35)', borderColor: 'rgba(255,207,92,0.8)', borderWidth: 1.5, shadowBlur: 8, shadowColor: 'rgba(255,207,92,0.6)' },
-            data: [{ value: MAP_HUB }],
+            data: mapPointData,
           },
         ],
       }
@@ -260,10 +288,13 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
           bottom: 6,
           left: 6,
           right: 6,
-          itemStyle: { areaColor: '#131720', borderColor: '#3d4250' },
-          emphasis: { itemStyle: { areaColor: '#132a45' }, label: { show: false } },
+          itemStyle: { areaColor: '#16293C', borderColor: 'rgba(201,163,91,0.3)' },
+          emphasis: { itemStyle: { areaColor: '#1D3348' }, label: { show: false } },
+          regions: heatRegions,
         }
         geoComponentAppliedRef.current = true
+      } else {
+        mapOption.geo = { regions: heatRegions }
       }
       mapChart.setOption(mapOption, false)
     }
@@ -286,17 +317,35 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
 
   }, [geo, worldMapReady, topFlows, language])
 
-  function applyTopologyToChart(topo: Topology | null) {
+  function applyTopologyToChart(topo: Topology | null, force = false, stir = false) {
     const topoChart = topoChartRef.current
     if (!topoChart) return
-    const nodes = topo?.nodes ?? []
-    const edges = topo?.edges ?? []
+    // topo === null means the poll hasn't returned yet: keep whatever is on
+    // screen instead of flashing the "no data" placeholder while loading.
+    if (!topo) return
+    const nodes = topo.nodes ?? []
+    const edges = topo.edges ?? []
 
     if (!nodes.length) {
       setTopoEmpty(true)
+      lastTopoSigRef.current = ''
       return
     }
     setTopoEmpty(false)
+
+    // Relayout only when the host/edge set actually changes, or when the gentle
+    // "live" timer stirs it (force). This decouples the graph's motion from the
+    // fast data poll so it stops jerking on every refresh -- the poll still
+    // updates the side cards and (on structural change) sizes.
+    const sig =
+      nodes.map((n) => n.ip).sort().join(',') +
+      '|' +
+      edges.map((e) => `${e.src}>${e.dst}`).sort().join(',')
+    if (!force && sig === lastTopoSigRef.current) return
+    lastTopoSigRef.current = sig
+    structuralRenderRef.current = !stir
+    // A structural (re)layout must re-settle before the drift may pin/tween.
+    if (!stir) settledRef.current = false
 
     const cache = visualBytesCacheRef.current
     const stableByNode: Record<string, number> = {}
@@ -309,6 +358,19 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
     })
     const maxBytes = nodes.reduce((m, n) => Math.max(m, stableByNode[n.ip]), 0) || 1
     const maxEdgeBytes = edges.reduce((m, e) => Math.max(m, stableByEdge[`${e.src}->${e.dst}`]), 0) || 1
+
+    const neighbors: Record<string, Set<string>> = {}
+    edges.forEach((e) => {
+      ;(neighbors[e.src] = neighbors[e.src] || new Set()).add(e.dst)
+      ;(neighbors[e.dst] = neighbors[e.dst] || new Set()).add(e.src)
+    })
+    const degreeOf = (ip: string) => neighbors[ip]?.size ?? 0
+    const hotCount = Math.min(12, Math.max(1, Math.ceil(nodes.length * 0.35)))
+    const hotIPs = new Set(nodes.slice().sort((a, b) => stableByNode[b.ip] - stableByNode[a.ip]).slice(0, hotCount).map((n) => n.ip))
+    nodes.forEach((n) => {
+      if (degreeOf(n.ip) >= SERVER_MIN_DEGREE) hotIPs.add(n.ip)
+    })
+    const isServerNode = (n: TopologyNode) => hotIPs.has(n.ip)
 
     const chartDom = topoDivRef.current
     const boxW = chartDom?.clientWidth || 400
@@ -332,53 +394,75 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
     topoChart.setOption(
       {
         backgroundColor: 'transparent',
+        // Long, linear position tween so the gentle drift interpolates
+        // smoothly between ticks instead of stepping.
+        animationDurationUpdate: TOPO_DRIFT_TICK_MS,
+        animationEasingUpdate: 'linear',
         tooltip: {
           trigger: 'item',
-          backgroundColor: '#131720',
-          borderColor: '#3d4250',
-          textStyle: { color: '#e2e6ea' },
-          formatter: (p: { dataType?: string; data: { source?: string; target?: string; name?: string; businessLabel?: string; bytesRaw: number; packetsRaw: number } }) => {
+          backgroundColor: 'rgba(8,15,24,0.92)',
+          borderColor: 'rgba(201,163,91,0.3)',
+          textStyle: { color: '#ECE6D6' },
+          formatter: (p: { dataType?: string; data: { source?: string; target?: string; name?: string; businessLabel?: string; bytesRaw: number; packetsRaw: number; degreeRaw?: number; isServer?: boolean } }) => {
             if (p.dataType === 'edge') {
               return `${p.data.source} ↔ ${p.data.target}<br/>${formatBytes(p.data.bytesRaw)}, ${p.data.packetsRaw.toLocaleString()}${t('packetsSuffix')}`
             }
+            const roleTag = p.data.isServer ? `<span style="color:#F0C674;font-weight:700">● ${t('topoRoleServer')}</span> ` : ''
             const title = p.data.businessLabel
-              ? `<span style="color:#2ee6a8;font-weight:600">${p.data.businessLabel}</span><span style="color:#8b93a0"> · </span>${p.data.name}`
+              ? `<span style="color:#4FD0C0;font-weight:600">${p.data.businessLabel}</span><span style="color:#8b93a0"> · </span>${p.data.name}`
               : p.data.name
-            return `${title}<br/>${formatBytes(p.data.bytesRaw)}, ${p.data.packetsRaw.toLocaleString()}${t('packetsSuffix')}`
+            const degreeLine = p.data.degreeRaw != null ? `<br/>${t('tipDegreeLbl')} ${p.data.degreeRaw}` : ''
+            return `${roleTag}${title}<br/>${formatBytes(p.data.bytesRaw)}, ${p.data.packetsRaw.toLocaleString()}${t('packetsSuffix')}${degreeLine}`
           },
         },
         series: [
           {
             type: 'graph',
-            layout: 'force',
+            // Drift renders use 'none' (pure x/y placement + tween) so the
+            // graph never re-runs the force simulation and never re-converges;
+            // only the initial/structural layout uses 'force'.
+            layout: stir ? 'none' : 'force',
             roam: true,
             draggable: false,
-            // Nudged up/right of dead-center: the .mip info card overlays the
-            // bottom-left corner of this chart, so bias the force layout's
-            // settling point away from there instead of the true center.
-            center: ['58%', '42%'],
+            // Center the graph. Only when the rotating info card is actually
+            // shown (there are nodes -> the .mip tip card overlays the
+            // bottom-left corner) do we nudge the settling point gently up/right
+            // to clear it; otherwise sit dead-center.
+            center: nodes.length > 0 ? ['54%', '46%'] : ['50%', '50%'],
             force: { repulsion, edgeLength: edgeLen, gravity: 0.08, friction: 0.5 },
-            symbolSize: (_val: unknown, params: { data: { sizeQ: number } }) => 10 + params.data.sizeQ * 20,
-            itemStyle: { color: '#35e0ff', shadowBlur: 8, shadowColor: '#35e0ff', borderColor: 'rgba(255,207,92,0.7)', borderWidth: 1 },
-            label: { show: true, position: 'bottom', color: '#8b93a0', fontSize: 9.5, fontFamily: 'ui-monospace, monospace' },
+            symbolSize: (_val: unknown, params: { data: { sizeQ: number; isServer?: boolean } }) =>
+              params.data.isServer ? 16 + params.data.sizeQ * 22 : 6 + params.data.sizeQ * 8,
+            itemStyle: { color: '#4FD0C0', shadowBlur: 8, shadowColor: 'rgba(79,208,192,0.7)', borderColor: 'rgba(201,163,91,0.7)', borderWidth: 1 },
+            label: { show: true, position: 'bottom', color: '#8A9BAB', fontSize: 9.5, fontFamily: 'ui-monospace, monospace' },
             labelLayout: { hideOverlap: true },
             emphasis: { disabled: true },
-            lineStyle: { color: '#35e0ff', curveness: 0.15 },
-            effect: { show: true, trailLength: 0.4, symbol: 'circle', symbolSize: 5, color: '#ffe6f5', shadowBlur: 10, shadowColor: '#ffe6f5' },
+            lineStyle: { color: '#4FD0C0', curveness: 0.12 },
             data: nodes.map((n) => {
-              const pos = topoNodePosRef.current[n.ip]
+              const base = persistedTopoPos[n.ip]
+              const srv = isServerNode(n)
               const item: Record<string, unknown> = {
                 id: n.ip,
                 name: n.ip,
                 businessLabel: n.label || '',
                 bytesRaw: n.bytes,
                 packetsRaw: n.packets,
+                degreeRaw: degreeOf(n.ip),
+                isServer: srv,
                 sizeQ: Math.round(Math.sqrt(stableByNode[n.ip] / maxBytes) * 20) / 20,
-                label: { show: labeledIPs.has(n.ip), formatter: () => n.label || n.ip },
+                itemStyle: srv
+                  ? { color: '#E8A84B', borderColor: '#F0C674', borderWidth: 1.5, shadowBlur: 14, shadowColor: 'rgba(232,168,75,0.7)' }
+                  : { color: '#4FD0C0', borderColor: 'rgba(201,163,91,0.5)', borderWidth: 1, shadowBlur: 6, shadowColor: 'rgba(79,208,192,0.55)' },
+                label: { show: srv || labeledIPs.has(n.ip), color: srv ? '#F0C674' : '#8A9BAB', fontWeight: srv ? 700 : 400, formatter: () => n.ip },
               }
-              if (pos) {
-                item.x = pos.x
-                item.y = pos.y
+              if (base) {
+                // Pin nodes at their settled base position (+ a tiny per-node
+                // jitter offset when the live timer is nudging this one). Pinning
+                // means updates are smooth position tweens, never a whole-graph
+                // force re-converge -- so entry is already-formed and the liveness
+                // is just the odd leaf drifting, not the entire topology pulsing.
+                const j = driftRef.current[n.ip]
+                item.x = base.x + (j ? j.dx : 0)
+                item.y = base.y + (j ? j.dy : 0)
                 item.fixed = true
               }
               return item
@@ -390,8 +474,7 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
                 target: e.dst,
                 bytesRaw: e.bytes,
                 packetsRaw: e.packets,
-                lineStyle: { width: 0.8 + v * 2.5, opacity: 0.2 + v * 0.35 },
-                effect: { period: 2.8 - v * 1.2 },
+                lineStyle: { width: 0.65 + v * 2, opacity: 0.12 + v * 0.28 },
               }
             }),
           },
@@ -432,7 +515,42 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
 
   }, [mode])
 
+  // Gentle liveness: every tick, all nodes take a small bounded random-walk
+  // step (base position + a drifting offset), so multiple places float softly
+  // at once. Skipped until the initial layout has settled and every node has a
+  // cached base position -- otherwise a stir would re-run the force layout on
+  // not-yet-pinned nodes and cause a second full converge a few seconds in.
   useEffect(() => {
+    const id = setInterval(() => {
+      if (modeRef.current !== 'topo') return
+      if (!settledRef.current) return // wait until the force layout has settled
+      const topo = lastTopoRef.current
+      const ns = topo?.nodes ?? []
+      if (!ns.length) return
+      for (const n of ns) {
+        if (!persistedTopoPos[n.ip]) return // base not ready yet -> hold still
+      }
+      const d = driftRef.current
+      const clamp = (v: number) => (v > TOPO_DRIFT_AMP ? TOPO_DRIFT_AMP : v < -TOPO_DRIFT_AMP ? -TOPO_DRIFT_AMP : v)
+      for (const n of ns) {
+        const cur = d[n.ip] ?? { dx: 0, dy: 0 }
+        cur.dx = clamp((cur.dx + (Math.random() - 0.5) * 14) * 0.88)
+        cur.dy = clamp((cur.dy + (Math.random() - 0.5) * 14) * 0.88)
+        d[n.ip] = cur
+      }
+      applyTopologyToChart(topo, true, true)
+    }, TOPO_DRIFT_TICK_MS)
+    return () => clearInterval(id)
+  }, [])
+
+  // Fixed view modes ("world"/"topo") pin the panel; only "auto" alternates.
+  useEffect(() => {
+    if (viewMode === 'world') setMode('map')
+    else if (viewMode === 'topo') setMode('topo')
+  }, [viewMode])
+
+  useEffect(() => {
+    if (viewMode !== 'auto') return
     const id = setInterval(() => {
       setMode((cur) => {
         const next = cur === 'map' ? 'topo' : 'map'
@@ -440,9 +558,9 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
         if (next === 'map' && !(lastGeoEnabledRef.current && lastMapHasTrafficRef.current)) return cur
         return next
       })
-    }, GEO_ROTATE_MS)
+    }, Math.max(1, switchIntervalSec) * 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [viewMode, switchIntervalSec])
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -464,14 +582,16 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
   const tipNode = tipPoints[tipIdx]
 
   return (
-    <div className="panel flex1">
-      <div className="panel-head">
-        <h2>
-          <span className="panel-head-title">{t(showMap ? 'geoTitle' : 'topoTitle')}</span>
-        </h2>
-      </div>
+    <div className={hero ? 'geo-hero' : 'panel flex1'}>
+      {!hero && (
+        <div className="panel-head">
+          <h2>
+            <span className="panel-head-title">{t(showMap ? 'geoTitle' : 'topoTitle')}</span>
+          </h2>
+        </div>
+      )}
       <div className="map-wrap">
-        <div ref={mapDivRef} id="map-chart" style={{ display: showMap ? '' : 'none', visibility: mapEmpty ? 'hidden' : 'visible' }} />
+        <div ref={mapDivRef} id="map-chart" className={showMap ? '' : 'map-backdrop'} style={{ visibility: mapEmpty ? 'hidden' : 'visible' }} />
         {showMap && mapEmpty === 'disabled' && (
           <div className="map-disabled">
             <div className="big">{t('mapDisabledBig')}</div>
@@ -551,6 +671,14 @@ export function GeoPanel({ geo, topology, topFlows }: { geo: GeoReport | null; t
   )
 }
 
+function svcClass(service?: string, proto?: string) {
+  const s = (service || proto || '').toLowerCase()
+  if (s.includes('ssh')) return 'svc ssh'
+  if (s.includes('mysql')) return 'svc mysql'
+  if (s.includes('http')) return 'svc http'
+  return 'svc'
+}
+
 function FlowsList({ entries, emptyText }: { entries: FlowEntry[]; emptyText: string }) {
   if (!entries.length) return <div className="mip-flows"><div className="none">{emptyText}</div></div>
   return (
@@ -559,7 +687,9 @@ function FlowsList({ entries, emptyText }: { entries: FlowEntry[]; emptyText: st
         <div key={i}>
           {'↔ '}
           <span className="peer">{f.peer}</span>
-          {`  ${(f.proto || '').toUpperCase()}/${f.port}${f.service ? ' (' + f.service + ')' : ''}  `}
+          {'  '}
+          <span className={svcClass(f.service, f.proto)}>{`${(f.proto || '').toUpperCase()}/${f.port}${f.service ? ' (' + f.service + ')' : ''}`}</span>
+          {'  '}
           <span className="bytes">{formatBytes(f.bytes)}</span>
         </div>
       ))}

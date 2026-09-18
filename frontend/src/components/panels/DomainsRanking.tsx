@@ -11,7 +11,7 @@ export function DomainsRanking({ items }: { items: DomainStat[] }) {
           <span className="panel-head-title">{t('domainsTitle')}</span>
         </h2>
       </div>
-      <RankList items={items} labelFn={(d) => d.domain} color="#35e0ff" />
+      <RankList items={items} labelFn={(d) => d.domain} color="#4FD0C0" />
     </div>
   )
 }

@@ -301,6 +301,36 @@ type MonitorSnapshot struct {
 	Ifaces         []IfaceStatus `json:"ifaces"`
 }
 
+func ifaceStatuses(ifaces []ifaceConfig, rates map[string]ifaceRate) []IfaceStatus {
+	out := make([]IfaceStatus, 0, len(ifaces))
+	for _, ifc := range ifaces {
+		st := IfaceStatus{
+			Name:                  ifc.name,
+			PromiscEnabledByNetra: ifc.promiscByNetra,
+			CarrierUp:             readIfaceCarrier(ifc.name),
+			SpeedMbps:             readIfaceSpeedMbps(ifc.name),
+		}
+		if rate, ok := rates[ifc.name]; ok {
+			st.RxPPS = rate.rxPPS
+			st.RxBPS = rate.rxBPS
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// ifacesSnapshot returns just the mirror-NIC throughput slice, without the
+// admin-only operational data in MonitorSnapshot (DB conns, heap, etc.) --
+// used by the Dashboard panel, reachable by any authenticated role.
+func (m *monitor) ifacesSnapshot() (genericMode bool, ifaces []IfaceStatus) {
+	m.mu.Lock()
+	cfgs := m.ifaces
+	rates := m.ifaceRates
+	generic := m.genericMode
+	m.mu.Unlock()
+	return generic, ifaceStatuses(cfgs, rates)
+}
+
 func (m *monitor) snapshot(agg *aggregator, kafkaExp *kafkaExporter, mcpMgr *mcpManager) MonitorSnapshot {
 	m.mu.Lock()
 	cpuPercent := m.cpuPercent
@@ -324,20 +354,7 @@ func (m *monitor) snapshot(agg *aggregator, kafkaExp *kafkaExporter, mcpMgr *mcp
 	s.MCPServersConnected, s.MCPServersTotal = mcpMgr.connectedCounts()
 
 	s.XDPGenericMode = genericMode
-	s.Ifaces = make([]IfaceStatus, 0, len(ifaces))
-	for _, ifc := range ifaces {
-		st := IfaceStatus{
-			Name:                  ifc.name,
-			PromiscEnabledByNetra: ifc.promiscByNetra,
-			CarrierUp:             readIfaceCarrier(ifc.name),
-			SpeedMbps:             readIfaceSpeedMbps(ifc.name),
-		}
-		if rate, ok := rates[ifc.name]; ok {
-			st.RxPPS = rate.rxPPS
-			st.RxBPS = rate.rxBPS
-		}
-		s.Ifaces = append(s.Ifaces, st)
-	}
+	s.Ifaces = ifaceStatuses(ifaces, rates)
 
 	if load1, load5, load15, err := readLoadAvg(); err == nil {
 		s.LoadAvg1, s.LoadAvg5, s.LoadAvg15 = load1, load5, load15

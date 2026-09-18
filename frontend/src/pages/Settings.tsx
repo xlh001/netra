@@ -92,7 +92,7 @@ export function Settings() {
               activeKey={activeTab}
               onChange={setActiveTab}
               items={[
-                { key: 'general', label: t('settingsSectionGeneral'), forceRender: true, children: <GeneralTab t={t} /> },
+                { key: 'general', label: t('settingsSectionGeneral'), forceRender: true, children: <GeneralTab t={t} form={form} /> },
                 { key: 'threat', label: t('settingsSectionThreat'), forceRender: true, children: <ThreatTab t={t} form={form} /> },
                 { key: 'capacity', label: t('settingsSectionCapacity'), forceRender: true, children: <CapacityTab t={t} /> },
                 { key: 'sqlAudit', label: t('settingsSectionSQLAudit'), forceRender: true, children: <SQLAuditTab t={t} form={form} /> },
@@ -121,7 +121,8 @@ export function Settings() {
 
 type T = ReturnType<typeof useT>
 
-function GeneralTab({ t }: { t: T }) {
+function GeneralTab({ t, form }: { t: T; form: FormInstance<ConfigDTO> }) {
+  const geoViewMode = Form.useWatch('geoViewMode', form)
   return (
     <>
       <Form.Item label={t('settingsLanguage')} name="language" rules={[{ required: true }]}>
@@ -135,6 +136,24 @@ function GeneralTab({ t }: { t: T }) {
       </Form.Item>
       <Form.Item label={t('settingsRefreshInterval')} name="refreshIntervalMs" rules={[{ required: true }]} extra={t('settingsRefreshIntervalHint')}>
         <InputNumber min={1} style={{ width: '100%' }} />
+      </Form.Item>
+      <Form.Item label={t('settingsGeoViewMode')} name="geoViewMode" rules={[{ required: true }]} extra={t('settingsGeoViewModeHint')}>
+        <Select
+          style={{ width: 240 }}
+          options={[
+            { value: 'auto', label: t('settingsGeoViewAuto') },
+            { value: 'world', label: t('settingsGeoViewWorld') },
+            { value: 'topo', label: t('settingsGeoViewTopo') },
+          ]}
+        />
+      </Form.Item>
+      <Form.Item
+        label={t('settingsGeoSwitchInterval')}
+        name="geoSwitchIntervalSec"
+        rules={[{ required: true }]}
+        extra={t('settingsGeoSwitchIntervalHint')}
+      >
+        <InputNumber min={1} style={{ width: '100%' }} addonAfter={t('settingsSecondsUnit')} disabled={geoViewMode !== 'auto'} />
       </Form.Item>
     </>
   )

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,22 +63,25 @@ func (m *sqlAuditManager) onDPIService(key xdpflowFlowKey, service string) {
 	if !m.cfg.Snapshot().SQLAuditEnabled {
 		return
 	}
+	rev := xdpflowFlowKey{Saddr: key.Daddr, Daddr: key.Saddr, Sport: key.Dport, Dport: key.Sport, Proto: key.Proto}
+
 	var dbType string
-	registerBothDirections := false
+	var targets []xdpflowFlowKey
 	switch service {
 	case "mysql":
 		dbType = "mysql"
+		targets = []xdpflowFlowKey{rev}
+	case "postgresql":
+		dbType = "postgresql"
+		targets = []xdpflowFlowKey{key}
+	case "redis":
+		dbType = "redis"
+		targets = []xdpflowFlowKey{key}
 	case "mongodb":
 		dbType = "mongodb"
-		registerBothDirections = true
+		targets = []xdpflowFlowKey{key, rev}
 	default:
 		return
-	}
-
-	rev := xdpflowFlowKey{Saddr: key.Daddr, Daddr: key.Saddr, Sport: key.Dport, Dport: key.Sport, Proto: key.Proto}
-	targets := []xdpflowFlowKey{rev}
-	if registerBothDirections {
-		targets = append(targets, key)
 	}
 
 	m.mu.Lock()
@@ -207,6 +212,10 @@ func handleSQLAuditEvent(raw []byte, m *sqlAuditManager) {
 	switch dbType {
 	case "mysql":
 		records, remaining = parseMySQLQueries(buf, saddr, sport, daddr, dport)
+	case "postgresql":
+		records, remaining = parsePostgresQueries(buf, saddr, sport, daddr, dport)
+	case "redis":
+		records, remaining = parseRedisCommands(buf, saddr, sport, daddr, dport)
 	case "mongodb":
 		records, remaining = parseMongoMessages(buf, saddr, sport, daddr, dport)
 	default:
@@ -259,6 +268,138 @@ func parseMySQLQueries(buf []byte, saddr uint32, sport uint16, daddr uint32, dpo
 		}
 	}
 	return records, append([]byte(nil), buf[pos:]...)
+}
+
+func parsePostgresQueries(buf []byte, saddr uint32, sport uint16, daddr uint32, dport uint16) ([]SQLAuditRecord, []byte) {
+	var records []SQLAuditRecord
+	pos := 0
+	for {
+		if len(buf)-pos < 5 {
+			break
+		}
+		msgType := buf[pos]
+		msgLen := int(binary.BigEndian.Uint32(buf[pos+1 : pos+5]))
+		if msgLen < 4 || msgLen > sqlAuditPerFlowBufCap {
+			return records, nil
+		}
+		if len(buf)-pos < 1+msgLen {
+			break
+		}
+		body := buf[pos+5 : pos+1+msgLen]
+		pos += 1 + msgLen
+
+		var query string
+		switch msgType {
+		case 'Q':
+			query = postgresCString(body, 0)
+		case 'P':
+			nameEnd := bytes.IndexByte(body, 0)
+			if nameEnd < 0 {
+				continue
+			}
+			query = postgresCString(body, nameEnd+1)
+		default:
+			continue
+		}
+		if query == "" {
+			continue
+		}
+		text, truncated := capText(normalizeText(query), sqlAuditQueryTextCap)
+		records = append(records, SQLAuditRecord{
+			Time: time.Now(), DBType: "postgresql",
+			SrcIP: saddr, SrcPort: sport, DstIP: daddr, DstPort: dport,
+			QueryText: text, Truncated: truncated,
+		})
+	}
+	return records, append([]byte(nil), buf[pos:]...)
+}
+
+func postgresCString(body []byte, start int) string {
+	if start >= len(body) {
+		return ""
+	}
+	end := bytes.IndexByte(body[start:], 0)
+	if end < 0 {
+		return string(body[start:])
+	}
+	return string(body[start : start+end])
+}
+
+func parseRedisCommands(buf []byte, saddr uint32, sport uint16, daddr uint32, dport uint16) ([]SQLAuditRecord, []byte) {
+	var records []SQLAuditRecord
+	pos := 0
+	for {
+		args, consumed, ok := parseRESPArray(buf[pos:])
+		if !ok {
+			break
+		}
+		pos += consumed
+		if len(args) == 0 || !isDangerousRedisCommand(args) {
+			continue
+		}
+		text, truncated := capText(normalizeText(strings.Join(args, " ")), sqlAuditQueryTextCap)
+		records = append(records, SQLAuditRecord{
+			Time: time.Now(), DBType: "redis",
+			SrcIP: saddr, SrcPort: sport, DstIP: daddr, DstPort: dport,
+			QueryText: text, Truncated: truncated,
+		})
+	}
+	return records, append([]byte(nil), buf[pos:]...)
+}
+
+var dangerousRedisCommands = map[string]bool{
+	"FLUSHALL": true, "FLUSHDB": true, "SHUTDOWN": true, "ACL": true,
+}
+
+func isDangerousRedisCommand(args []string) bool {
+	cmd := strings.ToUpper(args[0])
+	if dangerousRedisCommands[cmd] {
+		return true
+	}
+	switch cmd {
+	case "CONFIG":
+		return len(args) >= 2 && strings.EqualFold(args[1], "SET")
+	case "KEYS":
+		return len(args) >= 2 && args[1] == "*"
+	}
+	return false
+}
+
+func parseRESPArray(buf []byte) (args []string, consumed int, ok bool) {
+	if len(buf) < 4 || buf[0] != '*' {
+		return nil, 0, false
+	}
+	lineEnd := bytes.Index(buf, []byte("\r\n"))
+	if lineEnd < 0 {
+		return nil, 0, false
+	}
+	n, err := strconv.Atoi(string(buf[1:lineEnd]))
+	if err != nil || n <= 0 || n > 1024 {
+		return nil, 0, false
+	}
+	pos := lineEnd + 2
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if pos >= len(buf) || buf[pos] != '$' {
+			return nil, 0, false
+		}
+		lenEnd := bytes.Index(buf[pos:], []byte("\r\n"))
+		if lenEnd < 0 {
+			return nil, 0, false
+		}
+		argLen, err := strconv.Atoi(string(buf[pos+1 : pos+lenEnd]))
+		if err != nil || argLen < 0 || argLen > sqlAuditQueryTextCap {
+			return nil, 0, false
+		}
+		argStart := pos + lenEnd + 2
+		argEnd := argStart + argLen
+		if argEnd+2 > len(buf) {
+			return nil, 0, false
+		}
+		out = append(out, string(buf[argStart:argEnd]))
+		pos = argEnd + 2
+	}
+	return out, pos, true
 }
 
 var mongoCommandNames = map[string]bool{

@@ -41,6 +41,7 @@ const (
 	xdpflowMapHttpAuthEvents = "http_auth_events"
 	xdpflowMapHttpAuthFlags  = "http_auth_flags"
 	xdpflowMapHttpEvents     = "http_events"
+	xdpflowMapHttpFlags      = "http_flags"
 	xdpflowMapSniEvents      = "sni_events"
 	xdpflowMapSqlAuditEvents = "sql_audit_events"
 	xdpflowMapSqlAuditFlags  = "sql_audit_flags"
@@ -101,6 +102,7 @@ type xdpflowMapSpecs struct {
 	HttpAuthEvents *ebpf.MapSpec `ebpf:"http_auth_events"`
 	HttpAuthFlags  *ebpf.MapSpec `ebpf:"http_auth_flags"`
 	HttpEvents     *ebpf.MapSpec `ebpf:"http_events"`
+	HttpFlags      *ebpf.MapSpec `ebpf:"http_flags"`
 	SniEvents      *ebpf.MapSpec `ebpf:"sni_events"`
 	SqlAuditEvents *ebpf.MapSpec `ebpf:"sql_audit_events"`
 	SqlAuditFlags  *ebpf.MapSpec `ebpf:"sql_audit_flags"`
@@ -137,6 +139,7 @@ type xdpflowMaps struct {
 	HttpAuthEvents *ebpf.Map `ebpf:"http_auth_events"`
 	HttpAuthFlags  *ebpf.Map `ebpf:"http_auth_flags"`
 	HttpEvents     *ebpf.Map `ebpf:"http_events"`
+	HttpFlags      *ebpf.Map `ebpf:"http_flags"`
 	SniEvents      *ebpf.Map `ebpf:"sni_events"`
 	SqlAuditEvents *ebpf.Map `ebpf:"sql_audit_events"`
 	SqlAuditFlags  *ebpf.Map `ebpf:"sql_audit_flags"`
@@ -149,6 +152,7 @@ func (m *xdpflowMaps) Close() error {
 		m.HttpAuthEvents,
 		m.HttpAuthFlags,
 		m.HttpEvents,
+		m.HttpFlags,
 		m.SniEvents,
 		m.SqlAuditEvents,
 		m.SqlAuditFlags,

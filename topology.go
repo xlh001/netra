@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const topologyMaxEdges = 18
+const topologyMaxEdges = 40
 
 type TopologyNode struct {
 	IP      string `json:"ip"`

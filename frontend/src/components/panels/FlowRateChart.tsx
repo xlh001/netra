@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useT } from '../../i18n/context'
 import { useEchart } from '../../hooks/useEchart'
+import { useAnimatedNumber } from '../../hooks/useAnimatedNumber'
 import type { FlowRate } from '../../api/types'
+
+function MetricValue({ text }: { text: string }) {
+  const match = text.match(/^([\d.,]+)\s*(.*)$/)
+  return <strong><b>{match?.[1] ?? text}</b>{match?.[2] && <i>{match[2]}</i>}</strong>
+}
 
 export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
   const t = useT()
@@ -10,6 +16,7 @@ export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
 
   const points = useMemo(() => flowRate?.points ?? [], [flowRate])
   const latest = points.length ? points[points.length - 1].perSec : 0
+  const animatedLatest = useAnimatedNumber(latest, (value) => value.toFixed(1) + t('flowRateNowSuffix'))
 
   useEffect(() => {
     const chart = chartRef.current
@@ -19,7 +26,7 @@ export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
     chart.setOption(
       {
         backgroundColor: 'transparent',
-        grid: { left: 4, right: 4, top: 6, bottom: 4 },
+        grid: { left: 4, right: 4, top: 54, bottom: 4 },
         xAxis: { type: 'category', show: false, data: xData },
         yAxis: { type: 'value', show: false, min: 0 },
         tooltip: {
@@ -38,7 +45,7 @@ export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
             data: yData,
             smooth: true,
             symbol: 'none',
-            lineStyle: { width: 1.5, color: '#35e0ff' },
+            lineStyle: { width: 1.5, color: '#4FD0C0' },
             areaStyle: {
               color: {
                 type: 'linear',
@@ -47,8 +54,8 @@ export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
                 x2: 0,
                 y2: 1,
                 colorStops: [
-                  { offset: 0, color: 'rgba(53,224,255,.35)' },
-                  { offset: 1, color: 'rgba(53,224,255,0)' },
+                  { offset: 0, color: 'rgba(79,208,192,.35)' },
+                  { offset: 1, color: 'rgba(79,208,192,0)' },
                 ],
               },
             },
@@ -65,9 +72,11 @@ export function FlowRateChart({ flowRate }: { flowRate: FlowRate | null }) {
         <h2>
           <span className="panel-head-title">{t('flowRateTitle')}</span>
         </h2>
-        <span className="count">{latest.toFixed(1) + t('flowRateNowSuffix')}</span>
       </div>
-      <div ref={divRef} style={{ height: '76px' }} />
+      <div className="chart-metric-stage">
+        <div ref={divRef} className="flowrate-canvas" />
+        <div className="chart-metric chart-metric-connection"><MetricValue text={animatedLatest} /></div>
+      </div>
     </div>
   )
 }

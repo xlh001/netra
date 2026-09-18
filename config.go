@@ -16,6 +16,9 @@ type ConfigDTO struct {
 	RefreshIntervalMs int  `json:"refreshIntervalMs"`
 	PersistScanAlerts bool `json:"persistScanAlerts"`
 
+	GeoViewMode          string `json:"geoViewMode"`
+	GeoSwitchIntervalSec int    `json:"geoSwitchIntervalSec"`
+
 	DBFlowTopK    int `json:"dbFlowTopK"`
 	TopKPerBucket int `json:"topKPerBucket"`
 
@@ -48,6 +51,14 @@ type ConfigDTO struct {
 
 const defaultSQLAuditMaxPerTick = 500
 
+const defaultGeoSwitchIntervalSec = 25
+
+const (
+	GeoViewAuto  = "auto"
+	GeoViewWorld = "world"
+	GeoViewTopo  = "topo"
+)
+
 const (
 	LangZH = "zh"
 	LangEN = "en"
@@ -65,6 +76,8 @@ func defaultConfig() *Config {
 		Language:                   LangZH,
 		RefreshIntervalMs:          5000,
 		PersistScanAlerts:          true,
+		GeoViewMode:                GeoViewAuto,
+		GeoSwitchIntervalSec:       defaultGeoSwitchIntervalSec,
 		DBFlowTopK:                 defaultDBFlowTopK,
 		TopKPerBucket:              defaultTopKPerBucket,
 		AnomalyEnabled:             false,

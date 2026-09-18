@@ -69,7 +69,7 @@ function hashString(s: string): number {
 export function protoColor(name: string): string {
   switch (name) {
     case 'tcp':
-      return '#35e0ff'
+      return '#4FD0C0'
     case 'udp':
       return '#9b8cff'
     case 'icmp':
@@ -93,7 +93,7 @@ function tintFromHex(hex: string): ServiceTint {
 }
 
 const OTHER_SERVICE_PALETTE = [
-  '#35e0ff', '#9b8cff', '#ffb454', '#2ee6a8', '#ff5d7a',
+  '#4FD0C0', '#9b8cff', '#ffb454', '#2ee6a8', '#ff5d7a',
   '#7fdcae', '#ff9e6d', '#c874ff', '#e8c869', '#6ea8ff',
   '#4fd1c5', '#f472b6', '#8a7355',
 ]
@@ -120,7 +120,7 @@ export function serviceColor(svc: string): ServiceTint {
 }
 
 const CATEGORY_PALETTE = [
-  '#35e0ff', '#9b8cff', '#ffb454', '#2ee6a8', '#ff5d7a',
+  '#4FD0C0', '#9b8cff', '#ffb454', '#2ee6a8', '#ff5d7a',
   '#7fdcae', '#ff9e6d', '#c874ff', '#e8c869', '#6ea8ff',
   '#4fd1c5', '#f472b6',
 ]

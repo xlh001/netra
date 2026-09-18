@@ -1,52 +1,17 @@
-import { useState, type CSSProperties, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/context'
-import { useI18n } from '../i18n/context'
-import { Logo } from '../components/Logo'
-import { RadarField } from '../components/RadarField'
 
-function LoginLanguageSwitch() {
-  const { language, setLanguage } = useI18n()
+function Mark() {
   return (
-    <div
-      style={{ position: 'absolute', top: '18px', right: '20px', zIndex: 2, display: 'flex', gap: '2px' }}
-      title="Display language preview only -- the actual system language is set by an administrator under Settings."
-    >
-      {(['zh', 'en'] as const).map((lang) => (
-        <button
-          key={lang}
-          type="button"
-          onClick={() => setLanguage(lang)}
-          style={{
-            background: language === lang ? 'var(--panel-2, rgba(53,224,255,0.14))' : 'transparent',
-            border: '1px solid var(--line)',
-            borderRadius: '5px',
-            padding: '3px 8px',
-            fontSize: '11px',
-            fontFamily: 'var(--font-mono)',
-            color: language === lang ? 'var(--scan)' : 'var(--ink-dim)',
-            cursor: 'pointer',
-          }}
-        >
-          {lang === 'zh' ? '中文' : 'EN'}
-        </button>
-      ))}
-    </div>
+    <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <path d="M7 21V8h13M28 8h13v13M7 27v13h13M28 40h13V27" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="24" cy="24" r="3.5" fill="#E8A84B" />
+    </svg>
   )
 }
 
-const inputStyle: CSSProperties = {
-  background: 'var(--panel)',
-  border: '1px solid var(--line)',
-  borderRadius: '6px',
-  padding: '7px 10px',
-  color: 'var(--ink)',
-  fontFamily: 'var(--font-mono)',
-  fontSize: '12px',
-}
-
 export function Login() {
-  const { t } = useI18n()
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -71,41 +36,55 @@ export function Login() {
   }
 
   return (
-    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
-      <RadarField />
-      <LoginLanguageSwitch />
-      <form onSubmit={handleSubmit} className="panel" style={{ width: '320px', padding: '28px 24px', position: 'relative', zIndex: 1 }}>
-        <div style={{ textAlign: 'center', marginBottom: '22px' }}>
-          <Logo />
-          <h1 style={{ margin: '10px 0 2px', fontSize: '18px', fontWeight: 700, letterSpacing: '4px', textTransform: 'uppercase', color: 'var(--scan)' }}>NETRA</h1>
-          <div style={{ fontSize: '9.5px', color: 'var(--ink-dim)', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '.07em' }}>
-            {t('loginSubtitle')}
+    <div className="login-page">
+      <svg className="login-background" viewBox="0 0 1672 941" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <g className="login-background-lines">
+          <path d="M857 0A203 203 0 0 0 1092 253" />
+          <path d="M0 683A213 213 0 0 1 289 877" />
+          <path d="M790 72v45M768 94h44M1016 104v284M942 75h119M905 320h156" />
+          <path d="M70 690v92M0 760h205M372 720v40M352 740h40M835 730h169M920 698v63M953 817v52M1029 628v160" />
+        </g>
+      </svg>
+      <main className="login-layout">
+        <section className="login-intro" aria-label="Netra platform overview">
+          <div className="login-brand"><span className="login-brand-mark"><Mark /></span><span>NETRA</span></div>
+          <div className="login-eyebrow">KERNEL-NATIVE TRAFFIC OBSERVABILITY</div>
+          <h1>Keep traffic in kernel.<br /><em>See what matters.</em></h1>
+          <div className="login-capability-stage" aria-label="Netra capabilities">
+            <article className="login-capability-card">
+              <span className="login-capability-ordinal">01</span>
+              <div className="login-capability-copy"><span>LIGHTWEIGHT</span><strong>One binary.<br />Zero dependencies.</strong></div>
+              <small>DEPLOY WITHOUT A STACK</small>
+            </article>
+            <article className="login-capability-card">
+              <span className="login-capability-ordinal">02</span>
+              <div className="login-capability-copy"><span>HIGH-PERFORMANCE</span><strong>XDP-native capture.<br />Zero packet loss.</strong></div>
+              <small>BUILT FOR HIGH-BANDWIDTH MIRROR PORTS</small>
+            </article>
+            <article className="login-capability-card">
+              <span className="login-capability-ordinal">03</span>
+              <div className="login-capability-copy"><span>AI-GROUNDED</span><strong>Ask questions about<br />your actual traffic.</strong></div>
+              <small>ANSWERS BACKED BY OBSERVED DATA</small>
+            </article>
+            <article className="login-capability-card">
+              <span className="login-capability-ordinal">04</span>
+              <div className="login-capability-copy"><span>MCP-EXTENSIBLE</span><strong>Extend AI with your<br />own tools and data.</strong></div>
+              <small>GROUNDED IN YOUR TRAFFIC</small>
+            </article>
+            <div className="login-capability-pager" aria-hidden="true"><i /><i /><i /><i /></div>
           </div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span className="control-label" style={{ margin: 0 }}>
-              {t('loginUsername')}
-            </span>
-            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoFocus style={inputStyle} required />
-          </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            <span className="control-label" style={{ margin: 0 }}>
-              {t('loginPassword')}
-            </span>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inputStyle} required />
-          </label>
-          {error && (
-            <div style={{ color: 'var(--rose)', fontSize: '11px' }}>
-              {t('loginFailed')}
-              {error}
-            </div>
-          )}
-          <button type="submit" className="icon-btn" disabled={submitting} style={{ width: '100%', padding: '9px 0', marginTop: '4px', fontSize: '12px' }}>
-            {t('loginButton')}
-          </button>
-        </div>
-      </form>
+        </section>
+        <section className="login-access">
+          <form className="login-form" onSubmit={handleSubmit}>
+            <div className="login-form-brand"><span className="login-form-mark"><Mark /></span><span>NETRA</span></div>
+            <div className="login-form-head"><div><h2>Sign in</h2><p>Access kernel-native observability</p></div></div>
+            <label className="login-field"><span>USERNAME</span><input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required /></label>
+            <label className="login-field"><span>PASSWORD</span><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>
+            {error && <div className="login-err">Sign-in failed: {error}</div>}
+            <button type="submit" className="login-btn" disabled={submitting}>{submitting ? 'SIGNING IN…' : 'SIGN IN'}</button>
+          </form>
+        </section>
+      </main>
     </div>
   )
 }

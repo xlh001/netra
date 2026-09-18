@@ -18,6 +18,7 @@ export interface FlowStat {
   service?: string
   dpi?: boolean
   svcOnSrc?: boolean
+  fingerprint?: string
   domain?: string
   packets: number
   bytes: number
@@ -30,6 +31,7 @@ export interface IPStat {
   org?: string
   packets: number
   bytes: number
+  fingerprints?: ServiceFingerprint[]
 }
 
 export interface PortStat {
@@ -69,6 +71,14 @@ export interface ThreatAlert {
   volumeBytes?: number
 }
 
+export interface ThreatStats {
+  scan: number
+  ddos: number
+  volume: number
+  ioc: number
+  total: number
+}
+
 export interface Report {
   window: string
   generatedAt: string
@@ -83,6 +93,9 @@ export interface Report {
   topIPs: IPStat[]
   topPorts: PortStat[]
   topDomains: DomainStat[]
+  prevDayActiveFlows?: number
+  prevDayTotalPackets?: number
+  prevDayTotalBytes?: number
 }
 
 export interface TimeseriesPoint {
@@ -186,7 +199,7 @@ export interface ThreatAlertsPagedResponse {
   alerts: ThreatAlertRecord[]
 }
 
-export type SQLAuditDBType = 'mysql' | 'mongodb'
+export type SQLAuditDBType = 'mysql' | 'postgresql' | 'mongodb' | 'redis'
 
 export interface SQLAuditRecord {
   time: string
@@ -223,6 +236,11 @@ export interface IPProfileTrendPoint {
   packets: number
 }
 
+export interface ServiceFingerprint {
+  port: number
+  value: string
+}
+
 export interface IPProfile {
   ip: string
   label?: string
@@ -241,6 +259,7 @@ export interface IPProfile {
   trend: IPProfileTrendPoint[]
   alerts: ThreatAlertRecord[]
   totalAlertCount: number
+  fingerprints?: ServiceFingerprint[]
 }
 
 export interface ConfigDTO {
@@ -248,6 +267,10 @@ export interface ConfigDTO {
 
   refreshIntervalMs: number
   persistScanAlerts: boolean
+
+  geoViewMode: 'auto' | 'world' | 'topo'
+  geoSwitchIntervalSec: number
+
   dbFlowTopK: number
   topKPerBucket: number
 
@@ -434,7 +457,14 @@ export interface IfaceStatus {
   rxBPS: number
 }
 
+export interface IfacesSnapshot {
+  xdpGenericMode: boolean
+  ifaces: IfaceStatus[]
+}
+
 export type WeakAuthConfidence = 'high' | 'medium' | 'low'
+
+export type WeakAuthProto = 'http' | 'ftp' | 'pop3' | 'imap' | 'smtp'
 
 export interface WeakAuthFinding {
   id: number
@@ -443,6 +473,8 @@ export interface WeakAuthFinding {
   srcPort: number
   dstIP: string
   dstPort: number
+  proto: WeakAuthProto
+  domain?: string
   username: string
   matchedRule: string
   confidence: WeakAuthConfidence

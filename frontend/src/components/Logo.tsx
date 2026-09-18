@@ -1,11 +1,9 @@
 
 export function Logo() {
   return (
-    <svg className="mark" viewBox="0 0 42 42">
-      <circle className="ring" cx="21" cy="21" r="19" />
-      <circle className="ring" cx="21" cy="21" r="12" />
-      <circle className="pupil" cx="21" cy="21" r="4" />
-      <path className="sweep" d="M 21 2 A 19 19 0 0 1 38 14" />
+    <svg className="mark" viewBox="0 0 48 48" fill="none">
+      <path className="capture-frame" d="M7 21V8h13M28 8h13v13M7 27v13h13M28 40h13V27" />
+      <circle className="capture-signal" cx="24" cy="24" r="3.5" />
     </svg>
   )
 }

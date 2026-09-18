@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
-import { Card, Col, Progress, Row, Statistic, Tag, Tooltip } from 'antd'
-import { CloudUploadOutlined, DatabaseOutlined, InfoCircleOutlined, LinkOutlined, ThunderboltOutlined, WifiOutlined } from '@ant-design/icons'
+import { Card, Col, Progress, Row, Statistic, Tooltip } from 'antd'
+import { CloudUploadOutlined, DatabaseOutlined, InfoCircleOutlined, ThunderboltOutlined, WifiOutlined } from '@ant-design/icons'
 import { useI18n, useT } from '../i18n/context'
 import { usePolling } from '../hooks/usePolling'
 import { getMonitorSnapshot } from '../api/client'
-import { formatBps, formatBytes, formatCount } from '../lib/format'
+import { formatBytes } from '../lib/format'
 
 const POLL_MS = 3000
 
@@ -37,7 +37,7 @@ function cardTitle(icon: ReactNode, color: string, label: string): ReactNode {
 }
 
 export function Monitoring() {
-  const { t, language } = useI18n()
+  const { t } = useI18n()
   const { data, loading, error } = usePolling(getMonitorSnapshot, POLL_MS)
 
   return (
@@ -200,45 +200,6 @@ export function Monitoring() {
               </Col>
             </Row>
 
-            <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-              <Col span={24}>
-                <Card
-                  size="small"
-                  title={cardTitle(<LinkOutlined />, 'var(--scan)', t('monitorIfaces'))}
-                  extra={
-                    <Tag color={data.xdpGenericMode ? 'default' : 'processing'}>
-                      {data.xdpGenericMode ? t('monitorIfaceModeGeneric') : t('monitorIfaceModeNative')}
-                    </Tag>
-                  }
-                >
-                  {data.ifaces.map((ifc, i) => (
-                    <div
-                      key={ifc.name}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        flexWrap: 'wrap',
-                        gap: 16,
-                        padding: '10px 0',
-                        borderBottom: i < data.ifaces.length - 1 ? '1px solid var(--line)' : undefined,
-                      }}
-                    >
-                      <span style={{ fontWeight: 600, minWidth: 90 }}>{ifc.name}</span>
-                      <Tag color={ifc.carrierUp ? 'success' : 'error'}>{ifc.carrierUp ? t('monitorIfaceUp') : t('monitorIfaceDown')}</Tag>
-                      {!!ifc.speedMbps && (
-                        <span className="settings-section-desc" style={{ margin: 0 }}>
-                          {ifc.speedMbps >= 1000 ? `${ifc.speedMbps / 1000}Gbps` : `${ifc.speedMbps}Mbps`}
-                        </span>
-                      )}
-                      {ifc.promiscEnabledByNetra && <Tag color="processing">{t('monitorIfacePromiscByNetra')}</Tag>}
-                      <span className="settings-section-desc" style={{ margin: '0 0 0 auto' }}>
-                        {t('monitorIfaceRx')}: {formatCount(ifc.rxPPS, language)} pps / {formatBps(ifc.rxBPS)}
-                      </span>
-                    </div>
-                  ))}
-                </Card>
-              </Col>
-            </Row>
           </>
         )}
       </div>

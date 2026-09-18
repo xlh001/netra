@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf/link"
@@ -193,7 +194,8 @@ func main() {
 	} else {
 		weakPasswordDict.rebuild(saved)
 	}
-	weakAuthMgr := newWeakAuthManager(cfg, weakPasswordDict)
+	fingerprintMgr := newServiceFingerprintManager(store)
+	weakAuthMgr := newWeakAuthManager(cfg, weakPasswordDict, objs.HttpAuthFlags)
 
 	sniReader, err := startSNIReader(objs.SniEvents, agg.recordDomain)
 	if err != nil {
@@ -201,7 +203,7 @@ func main() {
 	}
 	defer sniReader.Close()
 
-	httpReader, err := startHTTPReader(objs.HttpEvents, agg.recordDomain)
+	httpReader, err := startHTTPReader(objs.HttpEvents, agg.recordDomain, fingerprintMgr.observe)
 	if err != nil {
 		log.Fatalf("start HTTP host reader: %v", err)
 	}
@@ -210,6 +212,7 @@ func main() {
 	dpiReader, err := startDPIReader(objs.DpiEvents, func(key xdpflowFlowKey, service string) {
 		agg.recordDPIService(key, service)
 		sqlAuditMgr.onDPIService(key, service)
+		weakAuthMgr.onDPIService(key, service)
 	})
 	if err != nil {
 		log.Fatalf("start dpi reader: %v", err)
@@ -272,7 +275,13 @@ func main() {
 		startWebServer(*webAddr, agg, geoDB, asnDB, store, cfg, kafkaExp, secret, mon, ipTags, iocList, mcpMgr, weakPasswordDict, weakAuthSecret)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// systemd's default stop/restart signal is SIGTERM, not SIGINT -- without
+	// catching it too, "systemctl restart" kills the process before any of
+	// the deferred cleanup (store.Close, tsstore hot-buffer sealing) runs,
+	// which is why a restart always finds a leftover hot buffer from the
+	// previous run and can transiently collide with the new process's first
+	// SQLite write.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	ticker := time.NewTicker(*interval)

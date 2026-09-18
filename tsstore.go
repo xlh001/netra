@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	duckdb "github.com/marcboeker/go-duckdb"
 )
@@ -375,6 +376,13 @@ func (t *tsStore) warmFlowFileCache() {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if _, err := t.getFlowFileTopK(j.path, j.start, j.end); err != nil {
+				// The retention prune runs concurrently at startup and may
+				// legitimately delete the oldest sealed file after warmup
+				// enumerated it -- that's expected, not a failure, so don't
+				// alarm about a file that's simply been aged out.
+				if _, statErr := os.Stat(j.path); os.IsNotExist(statErr) {
+					return
+				}
 				atomic.AddInt64(&failed, 1)
 				log.Printf("tsstore: flow file cache warmup failed for %s (will retry lazily on next query): %v", j.path, err)
 			}
@@ -535,11 +543,11 @@ func (t *tsStore) writeTick(ts int64, flows []flowSample, ips map[uint32]xdpflow
 	flowApp := t.appenders[tblFlow]
 	for _, f := range flows {
 		var domain any
-		if f.domain != "" {
+		if f.domain != "" && utf8.ValidString(f.domain) {
 			domain = f.domain
 		}
 		var dpiService any
-		if f.dpiService != "" {
+		if f.dpiService != "" && utf8.ValidString(f.dpiService) {
 			dpiService = f.dpiService
 		}
 		var svcPort any

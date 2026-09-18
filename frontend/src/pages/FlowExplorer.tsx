@@ -5,15 +5,15 @@ import type { ColumnsType } from 'antd/es/table'
 import { useT } from '../i18n/context'
 import { usePolling } from '../hooks/usePolling'
 import { usePagedState } from '../hooks/usePagedState'
-import { getDomainsPaged, getFlowsPaged, getIPsPaged, getPortsPaged, getServiceCategories, getSQLAuditPaged, getTimeseriesRange, getWeakAuthFindingsPaged, revealWeakAuthPassword } from '../api/client'
-import type { CategoryStat, DomainStat, FlowStat, IPStat, PortStat, SQLAuditDBType, SQLAuditRecord, TimeRange, WeakAuthConfidence, WeakAuthFinding } from '../api/types'
+import { getDomainsPaged, getFlowsPaged, getIPsPaged, getPortsPaged, getServiceCategories, getSQLAuditPaged, getWeakAuthFindingsPaged, revealWeakAuthPassword } from '../api/client'
+import type { CategoryStat, DomainStat, FlowStat, IPStat, PortStat, SQLAuditDBType, SQLAuditRecord, TimeRange, WeakAuthConfidence, WeakAuthFinding, WeakAuthProto } from '../api/types'
 import { TimeRangeSelector } from '../components/TimeRangeSelector'
-import { TrendChart } from '../components/panels/TrendChart'
-import { ProtocolPie } from '../components/panels/ProtocolPie'
 import { IPProfileDrawer } from '../components/panels/IPProfileDrawer'
 import { DataPagination } from '../components/DataPagination'
 import { formatBps, formatBytes, rangeToSeconds } from '../lib/format'
 import { AssetLabel, CategoryBadge, DBTypeBadge, DomainBadge, FlowRoleIcon, protoColumn, ServiceBadge } from '../lib/trafficColumns'
+
+const FLOW_PAGE_CAP = 5000
 
 function RefreshButton({ onClick, loading }: { onClick: () => void; loading?: boolean }) {
   return <Button icon={<ReloadOutlined />} onClick={onClick} loading={loading} />
@@ -68,7 +68,6 @@ function FlowsTab({ range }: { range: TimeRange }) {
   const [profileIP, setProfileIP] = useState<string>()
   const [profileOpen, setProfileOpen] = useState(false)
   const { data, loading, error, refetch } = usePolling(() => getFlowsPaged(range, page, pageSize, q || undefined, dpiOnly), 0, [range, page, pageSize, q, dpiOnly])
-  const { data: timeseries, loading: timeseriesLoading } = usePolling(() => getTimeseriesRange(range), 0, [range])
   const windowSeconds = rangeToSeconds(range)
 
   const columns: ColumnsType<FlowStat> = [
@@ -81,6 +80,7 @@ function FlowsTab({ range }: { range: TimeRange }) {
           <AssetLabel label={f.srcLabel} value={f.srcIP} />
           {f.srcPort ? ':' + f.srcPort : ''}
           {f.service && f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
+          {f.fingerprint && f.svcOnSrc && <span className="asset-pill">{f.fingerprint}</span>}
         </>
       ),
     },
@@ -93,6 +93,7 @@ function FlowsTab({ range }: { range: TimeRange }) {
           <AssetLabel label={f.dstLabel} value={f.dstIP} />
           {f.dstPort ? ':' + f.dstPort : ''}
           {f.service && !f.svcOnSrc && <ServiceBadge svc={f.service} dpi={f.dpi} />}
+          {f.fingerprint && !f.svcOnSrc && <span className="asset-pill">{f.fingerprint}</span>}
         </>
       ),
     },
@@ -104,14 +105,6 @@ function FlowsTab({ range }: { range: TimeRange }) {
 
   return (
     <div ref={containerRef} className="explorer-tab-body">
-      <div className="explorer-charts-row">
-        <div style={{ flex: 1.6, display: 'flex' }}>
-          <TrendChart timeseries={timeseries ?? null} loading={timeseriesLoading} />
-        </div>
-        <div style={{ flex: 1, display: 'flex' }}>
-          <ProtocolPie timeseries={timeseries ?? null} loading={timeseriesLoading} />
-        </div>
-      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
         <Input.Search
           placeholder={t('flowsFilterIPPlaceholder')}
@@ -153,7 +146,7 @@ function FlowsTab({ range }: { range: TimeRange }) {
         size="small"
         locale={error ? { emptyText: error.message } : undefined}
       />
-      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} sequentialOnly />
+      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} capRows={FLOW_PAGE_CAP} />
     </div>
   )
 }
@@ -169,6 +162,21 @@ function IPsTab({ range }: { range: TimeRange }) {
     { title: t('colIP'), dataIndex: 'ip', render: (v: string, ip) => <AssetLabel label={ip.label} value={v} /> },
     { title: t('colPackets'), dataIndex: 'packets', align: 'right', render: (v: number) => v.toLocaleString() },
     { title: t('colBytes'), dataIndex: 'bytes', align: 'right', render: (v: number) => bytesWithRate(v, windowSeconds) },
+    {
+      title: t('colFingerprint'),
+      dataIndex: 'fingerprints',
+      align: 'right',
+      render: (fps: IPStat['fingerprints']) =>
+        fps && fps.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end' }}>
+            {fps.map((f) => (
+              <span className="asset-pill" key={f.port}>
+                {f.port}: {f.value}
+              </span>
+            ))}
+          </div>
+        ) : null,
+    },
   ]
 
   return (
@@ -193,7 +201,7 @@ function IPsTab({ range }: { range: TimeRange }) {
         pagination={false}
         size="small"
       />
-      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} sequentialOnly />
+      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} capRows={FLOW_PAGE_CAP} />
     </div>
   )
 }
@@ -245,7 +253,7 @@ function PortsTab({ range }: { range: TimeRange }) {
         pagination={false}
         size="small"
       />
-      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} sequentialOnly />
+      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} capRows={FLOW_PAGE_CAP} />
     </div>
   )
 }
@@ -285,7 +293,7 @@ function DomainsTab({ range }: { range: TimeRange }) {
         pagination={false}
         size="small"
       />
-      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} sequentialOnly />
+      <DataPagination page={page} pageSize={pageSize} total={data?.total ?? 0} onPageChange={onPageChange} t={t} capRows={FLOW_PAGE_CAP} />
     </div>
   )
 }
@@ -408,7 +416,9 @@ function SQLAuditTab({ range }: { range: TimeRange }) {
           options={[
             { value: '', label: t('sqlAuditTypeAll') },
             { value: 'mysql', label: 'MySQL' },
+            { value: 'postgresql', label: 'PostgreSQL' },
             { value: 'mongodb', label: 'MongoDB' },
+            { value: 'redis', label: 'Redis' },
           ]}
         />
         <RefreshButton onClick={refetch} loading={loading} />
@@ -433,12 +443,13 @@ function WeakAuthFindingsTab({ range }: { range: TimeRange }) {
   const { containerRef, page, pageSize, setPage, onPageChange } = usePagedState()
   const [q, setQ] = useState('')
   const [confidence, setConfidence] = useState<WeakAuthConfidence | ''>('')
+  const [proto, setProto] = useState<WeakAuthProto | ''>('')
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealing, setRevealing] = useState<number | null>(null)
   const { data, loading, refetch } = usePolling(
-    () => getWeakAuthFindingsPaged(range, page, pageSize, q || undefined, confidence || undefined),
+    () => getWeakAuthFindingsPaged(range, page, pageSize, q || undefined, confidence || undefined, proto || undefined),
     0,
-    [range, page, pageSize, q, confidence],
+    [range, page, pageSize, q, confidence, proto],
   )
 
   async function handleReveal(id: number) {
@@ -455,6 +466,7 @@ function WeakAuthFindingsTab({ range }: { range: TimeRange }) {
 
   const columns: ColumnsType<WeakAuthFinding> = [
     { title: t('weakAuthColTime'), dataIndex: 'time', width: 160, render: (v: string) => new Date(v).toLocaleString() },
+    { title: t('weakAuthColProto'), dataIndex: 'proto', width: 90, render: (v: string) => <DBTypeBadge dbType={v} /> },
     {
       title: t('weakAuthColSrc'),
       key: 'src',
@@ -467,6 +479,7 @@ function WeakAuthFindingsTab({ range }: { range: TimeRange }) {
       width: 180,
       render: (_, r) => `${r.dstIP}:${r.dstPort}`,
     },
+    { title: t('weakAuthColDomain'), dataIndex: 'domain', width: 160, render: (v?: string) => (v ? <DomainBadge domain={v} /> : '--') },
     { title: t('weakAuthColUsername'), dataIndex: 'username', width: 160 },
     {
       title: t('weakAuthColPassword'),
@@ -515,6 +528,22 @@ function WeakAuthFindingsTab({ range }: { range: TimeRange }) {
             { value: 'high', label: t('weakAuthConfidence_high') },
             { value: 'medium', label: t('weakAuthConfidence_medium') },
             { value: 'low', label: t('weakAuthConfidence_low') },
+          ]}
+        />
+        <Select<WeakAuthProto | ''>
+          value={proto}
+          style={{ width: 140 }}
+          onChange={(v) => {
+            setPage(0)
+            setProto(v)
+          }}
+          options={[
+            { value: '', label: t('sqlAuditTypeAll') },
+            { value: 'http', label: 'HTTP' },
+            { value: 'ftp', label: 'FTP' },
+            { value: 'pop3', label: 'POP3' },
+            { value: 'imap', label: 'IMAP' },
+            { value: 'smtp', label: 'SMTP' },
           ]}
         />
         <RefreshButton onClick={refetch} loading={loading} />

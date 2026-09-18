@@ -20,6 +20,7 @@ import type {
   MCPServerTransport,
   MCPToolInfo,
   MonitorSnapshot,
+  IfacesSnapshot,
   PortsPagedResponse,
   Report,
   Role,
@@ -27,11 +28,13 @@ import type {
   SQLAuditDBType,
   SQLAuditPagedResponse,
   ThreatAlertsPagedResponse,
+  ThreatStats,
   TimeRange,
   Timeseries,
   Topology,
   UserRecord,
   WeakAuthConfidence,
+  WeakAuthProto,
   WeakAuthFindingsPagedResponse,
   WeakPasswordDictEntry,
   WeakPasswordDictPagedResponse,
@@ -100,6 +103,10 @@ export function getTimeseries(window: Window): Promise<Timeseries> {
   return getJSON<Timeseries>('/api/timeseries', { window })
 }
 
+export function getIfaces(): Promise<IfacesSnapshot> {
+  return getJSON<IfacesSnapshot>('/api/ifaces')
+}
+
 export function getTimeseriesRange(range: TimeRange): Promise<Timeseries> {
   return getJSON<Timeseries>('/api/timeseries', absoluteRangeParams(range))
 }
@@ -110,6 +117,14 @@ export function getFlowRate(): Promise<FlowRate> {
 
 export function getGeo(window: Window): Promise<GeoReport> {
   return getJSON<GeoReport>('/api/geo', { window })
+}
+
+export function getGeoRange(range: TimeRange): Promise<GeoReport> {
+  return getJSON<GeoReport>('/api/geo', absoluteRangeParams(range))
+}
+
+export function getThreatStats(range: TimeRange): Promise<ThreatStats> {
+  return getJSON<ThreatStats>('/api/admin/threat-stats', absoluteRangeParams(range))
 }
 
 export function getTopology(window: Window): Promise<Topology> {
@@ -162,8 +177,8 @@ export function clearSQLAuditSamples(): Promise<void> {
   return sendJSON<void>('/api/admin/sql-audit', 'DELETE')
 }
 
-export function getWeakAuthFindingsPaged(range: TimeRange, page: number, pageSize: number, q?: string, confidence?: WeakAuthConfidence | ''): Promise<WeakAuthFindingsPagedResponse> {
-  return getJSON<WeakAuthFindingsPagedResponse>('/api/admin/weak-auth', { ...rangeParams(range), page, pageSize, q: q || undefined, confidence: confidence || undefined })
+export function getWeakAuthFindingsPaged(range: TimeRange, page: number, pageSize: number, q?: string, confidence?: WeakAuthConfidence | '', proto?: WeakAuthProto | ''): Promise<WeakAuthFindingsPagedResponse> {
+  return getJSON<WeakAuthFindingsPagedResponse>('/api/admin/weak-auth', { ...rangeParams(range), page, pageSize, q: q || undefined, confidence: confidence || undefined, proto: proto || undefined })
 }
 
 export function revealWeakAuthPassword(id: number): Promise<{ password: string }> {

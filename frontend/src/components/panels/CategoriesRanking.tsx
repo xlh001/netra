@@ -54,9 +54,9 @@ export function CategoriesRanking({ items }: { items: CategoryStat[] }) {
             data: [
               {
                 value: logValues,
-                lineStyle: { color: '#35e0ff', width: 1.5 },
-                areaStyle: { color: 'rgba(53,224,255,0.14)' },
-                itemStyle: { color: '#35e0ff' },
+                lineStyle: { color: '#4FD0C0', width: 1.5 },
+                areaStyle: { color: 'rgba(79,208,192,0.14)' },
+                itemStyle: { color: '#4FD0C0' },
                 symbolSize: 4,
               },
             ],

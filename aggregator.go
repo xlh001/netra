@@ -582,19 +582,22 @@ func topKPort(m map[portKey]xdpflowFlowStats, k int) map[portKey]xdpflowFlowStat
 }
 
 type Report struct {
-	Window         string        `json:"window"`
-	GeneratedAt    time.Time     `json:"generatedAt"`
-	ActiveFlowsNow int           `json:"activeFlowsNow"`
-	TotalPackets   uint64        `json:"totalPackets"`
-	TotalBytes     uint64        `json:"totalBytes"`
-	ReadFailures   int           `json:"readFailures,omitempty"`
-	PossibleTicks  int           `json:"possibleTicks"`
-	ScanAlerts     []ThreatAlert `json:"scanAlerts,omitempty"`
-	Protocols      []ProtoStat   `json:"protocols"`
-	TopFlows       []FlowStat    `json:"topFlows"`
-	TopIPs         []IPStat      `json:"topIPs"`
-	TopPorts       []PortStat    `json:"topPorts"`
-	TopDomains     []DomainStat  `json:"topDomains"`
+	Window              string        `json:"window"`
+	GeneratedAt         time.Time     `json:"generatedAt"`
+	ActiveFlowsNow      int           `json:"activeFlowsNow"`
+	TotalPackets        uint64        `json:"totalPackets"`
+	TotalBytes          uint64        `json:"totalBytes"`
+	ReadFailures        int           `json:"readFailures,omitempty"`
+	PossibleTicks       int           `json:"possibleTicks"`
+	ScanAlerts          []ThreatAlert `json:"scanAlerts,omitempty"`
+	Protocols           []ProtoStat   `json:"protocols"`
+	TopFlows            []FlowStat    `json:"topFlows"`
+	TopIPs              []IPStat      `json:"topIPs"`
+	TopPorts            []PortStat    `json:"topPorts"`
+	TopDomains          []DomainStat  `json:"topDomains"`
+	PrevDayActiveFlows  int           `json:"prevDayActiveFlows,omitempty"`
+	PrevDayTotalPackets uint64        `json:"prevDayTotalPackets,omitempty"`
+	PrevDayTotalBytes   uint64        `json:"prevDayTotalBytes,omitempty"`
 }
 
 type ProtoStat struct {
@@ -604,30 +607,32 @@ type ProtoStat struct {
 }
 
 type FlowStat struct {
-	SrcIP      string `json:"srcIP"`
-	SrcPort    uint16 `json:"srcPort"`
-	SrcLabel   string `json:"srcLabel,omitempty"`
-	SrcCountry string `json:"srcCountry,omitempty"`
-	DstIP      string `json:"dstIP"`
-	DstPort    uint16 `json:"dstPort"`
-	DstLabel   string `json:"dstLabel,omitempty"`
-	DstCountry string `json:"dstCountry,omitempty"`
-	Proto      string `json:"proto"`
-	Service    string `json:"service,omitempty"`
-	DPI        bool   `json:"dpi,omitempty"`
-	SvcOnSrc   bool   `json:"svcOnSrc,omitempty"`
-	Domain     string `json:"domain,omitempty"`
-	Packets    uint64 `json:"packets"`
-	Bytes      uint64 `json:"bytes"`
+	SrcIP       string `json:"srcIP"`
+	SrcPort     uint16 `json:"srcPort"`
+	SrcLabel    string `json:"srcLabel,omitempty"`
+	SrcCountry  string `json:"srcCountry,omitempty"`
+	DstIP       string `json:"dstIP"`
+	DstPort     uint16 `json:"dstPort"`
+	DstLabel    string `json:"dstLabel,omitempty"`
+	DstCountry  string `json:"dstCountry,omitempty"`
+	Proto       string `json:"proto"`
+	Service     string `json:"service,omitempty"`
+	DPI         bool   `json:"dpi,omitempty"`
+	SvcOnSrc    bool   `json:"svcOnSrc,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	Packets     uint64 `json:"packets"`
+	Bytes       uint64 `json:"bytes"`
 }
 
 type IPStat struct {
-	IP      string `json:"ip"`
-	Label   string `json:"label,omitempty"`
-	Country string `json:"country,omitempty"`
-	Org     string `json:"org,omitempty"`
-	Packets uint64 `json:"packets"`
-	Bytes   uint64 `json:"bytes"`
+	IP           string               `json:"ip"`
+	Label        string               `json:"label,omitempty"`
+	Country      string               `json:"country,omitempty"`
+	Org          string               `json:"org,omitempty"`
+	Packets      uint64               `json:"packets"`
+	Bytes        uint64               `json:"bytes"`
+	Fingerprints []ServiceFingerprint `json:"fingerprints,omitempty"`
 }
 
 type PortStat struct {
@@ -680,6 +685,7 @@ type IPProfile struct {
 	Trend             []IPProfileTrendPoint `json:"trend"`
 	Alerts            []ThreatAlertRecord   `json:"alerts"`
 	TotalAlertCount   int                   `json:"totalAlertCount"`
+	Fingerprints      []ServiceFingerprint  `json:"fingerprints,omitempty"`
 }
 
 type CategoryStat struct {

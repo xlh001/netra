@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -49,6 +50,15 @@ type Store struct {
 	retention time.Duration
 	writeCh   chan tickSnapshot
 	closeCh   chan struct{}
+
+	// writeMu serializes the high-frequency per-tick SQLite writers
+	// (writeTick, InsertSQLAuditRecords, InsertWeakAuthFindings) --
+	// main.go fires the latter two as fire-and-forget goroutines
+	// alongside writeTick's own async channel on every collection tick,
+	// so without this they race for netra.db's single WAL writer slot
+	// and lose to SQLITE_BUSY under real traffic instead of just queuing
+	// behind each other.
+	writeMu sync.Mutex
 }
 
 func NewStore(path string, retention time.Duration, hotPeriod time.Duration) (*Store, error) {
@@ -74,6 +84,10 @@ func NewStore(path string, retention time.Duration, hotPeriod time.Duration) (*S
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 	ensureSQLAuditDedup(db)
+	if err := ensureWeakAuthProtoColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate weak_auth_findings: %w", err)
+	}
 	if err := ensureAppConfigCapacityColumns(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate app_config: %w", err)
@@ -141,6 +155,14 @@ func createSchema(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sql_audit_ts ON sql_audit_samples(ts)`,
 
+		`CREATE TABLE IF NOT EXISTS service_fingerprints (
+			ip INTEGER NOT NULL,
+			port INTEGER NOT NULL,
+			value TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (ip, port)
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS weak_password_dict (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			value TEXT NOT NULL UNIQUE,
@@ -154,6 +176,8 @@ func createSchema(db *sql.DB) error {
 			src_port INTEGER NOT NULL,
 			dst_ip INTEGER NOT NULL,
 			dst_port INTEGER NOT NULL,
+			proto TEXT NOT NULL DEFAULT 'http',
+			domain TEXT NOT NULL DEFAULT '',
 			username TEXT NOT NULL,
 			password_enc BLOB NOT NULL,
 			matched_rule TEXT NOT NULL,
@@ -172,6 +196,8 @@ func createSchema(db *sql.DB) error {
 			language TEXT NOT NULL DEFAULT 'zh',
 			refresh_interval_ms INTEGER NOT NULL,
 			persist_scan_alerts INTEGER NOT NULL,
+			geo_view_mode TEXT NOT NULL DEFAULT 'auto',
+			geo_switch_interval_sec INTEGER NOT NULL DEFAULT 25,
 			db_flow_topk INTEGER NOT NULL DEFAULT 2000,
 			topk_per_bucket INTEGER NOT NULL DEFAULT 200,
 			anomaly_enabled INTEGER NOT NULL DEFAULT 0,
@@ -361,6 +387,24 @@ func runSQLAuditDedup(db *sql.DB) {
 	log.Printf("store: sql_audit_samples dedup migration complete in %s", time.Since(start))
 }
 
+func ensureWeakAuthProtoColumn(db *sql.DB) error {
+	existing, err := columnNames(db, "weak_auth_findings")
+	if err != nil {
+		return fmt.Errorf("read weak_auth_findings columns: %w", err)
+	}
+	if !existing["proto"] {
+		if _, err := db.Exec(`ALTER TABLE weak_auth_findings ADD COLUMN proto TEXT NOT NULL DEFAULT 'http'`); err != nil {
+			return fmt.Errorf("add weak_auth_findings.proto: %w", err)
+		}
+	}
+	if !existing["domain"] {
+		if _, err := db.Exec(`ALTER TABLE weak_auth_findings ADD COLUMN domain TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add weak_auth_findings.domain: %w", err)
+		}
+	}
+	return nil
+}
+
 func ensureAppConfigCapacityColumns(db *sql.DB) error {
 	existing, err := columnNames(db, "app_config")
 	if err != nil {
@@ -393,6 +437,8 @@ func ensureAppConfigCapacityColumns(db *sql.DB) error {
 		{"sql_audit_enabled", "ALTER TABLE app_config ADD COLUMN sql_audit_enabled INTEGER NOT NULL DEFAULT 0"},
 		{"sql_audit_max_per_tick", "ALTER TABLE app_config ADD COLUMN sql_audit_max_per_tick INTEGER NOT NULL DEFAULT 500"},
 		{"weak_auth_enabled", "ALTER TABLE app_config ADD COLUMN weak_auth_enabled INTEGER NOT NULL DEFAULT 0"},
+		{"geo_view_mode", "ALTER TABLE app_config ADD COLUMN geo_view_mode TEXT NOT NULL DEFAULT 'auto'"},
+		{"geo_switch_interval_sec", "ALTER TABLE app_config ADD COLUMN geo_switch_interval_sec INTEGER NOT NULL DEFAULT 25"},
 	} {
 		if existing[col.name] {
 			continue
@@ -579,13 +625,13 @@ func ensureThreatAlertsSchema(db *sql.DB) error {
 
 func (s *Store) LoadConfig() (dto ConfigDTO, ok bool, err error) {
 	var persistScanAlerts, anomalyEnabled, aiEnabled, kafkaEnabled, kafkaTLS, sqlAuditEnabled, weakAuthEnabled int
-	row := s.db.QueryRow(`SELECT language, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
+	row := s.db.QueryRow(`SELECT language, refresh_interval_ms, persist_scan_alerts, geo_view_mode, geo_switch_interval_sec, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
 		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
 		sql_audit_enabled, sql_audit_max_per_tick, weak_auth_enabled
 		FROM app_config WHERE id = 1`)
-	if err := row.Scan(&dto.Language, &dto.RefreshIntervalMs, &persistScanAlerts, &dto.DBFlowTopK, &dto.TopKPerBucket,
+	if err := row.Scan(&dto.Language, &dto.RefreshIntervalMs, &persistScanAlerts, &dto.GeoViewMode, &dto.GeoSwitchIntervalSec, &dto.DBFlowTopK, &dto.TopKPerBucket,
 		&anomalyEnabled, &dto.AnomalyWindowSec, &dto.AnomalyPeerThreshold, &dto.AnomalyAvgPacketsThreshold, &dto.VolumeThresholdBytes,
 		&aiEnabled, &dto.AIProvider, &dto.AIBaseURL, &dto.AIAPIKey, &dto.AIModel,
 		&kafkaEnabled, &dto.KafkaBrokers, &dto.KafkaTopic, &dto.KafkaSASLUsername, &dto.KafkaSASLPassword, &kafkaTLS, &dto.KafkaFlowTopK,
@@ -639,13 +685,13 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 		weakAuthEnabled = 1
 	}
 	res, err := s.db.Exec(`UPDATE app_config SET
-		language = ?, refresh_interval_ms = ?, persist_scan_alerts = ?, db_flow_topk = ?, topk_per_bucket = ?,
+		language = ?, refresh_interval_ms = ?, persist_scan_alerts = ?, geo_view_mode = ?, geo_switch_interval_sec = ?, db_flow_topk = ?, topk_per_bucket = ?,
 		anomaly_enabled = ?, anomaly_window_sec = ?, anomaly_peer_threshold = ?, anomaly_avg_packets_threshold = ?, volume_threshold_bytes = ?,
 		ai_enabled = ?, ai_provider = ?, ai_base_url = ?, ai_api_key = ?, ai_model = ?,
 		kafka_enabled = ?, kafka_brokers = ?, kafka_topic = ?, kafka_sasl_username = ?, kafka_sasl_password = ?, kafka_tls = ?, kafka_flow_topk = ?,
 		sql_audit_enabled = ?, sql_audit_max_per_tick = ?, weak_auth_enabled = ?
 		WHERE id = 1`,
-		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
+		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.GeoViewMode, dto.GeoSwitchIntervalSec, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
 		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
@@ -658,13 +704,13 @@ func (s *Store) SaveConfig(dto ConfigDTO) error {
 	}
 
 	_, err = s.db.Exec(`INSERT INTO app_config(
-		id, language, refresh_interval_ms, persist_scan_alerts, db_flow_topk, topk_per_bucket,
+		id, language, refresh_interval_ms, persist_scan_alerts, geo_view_mode, geo_switch_interval_sec, db_flow_topk, topk_per_bucket,
 		anomaly_enabled, anomaly_window_sec, anomaly_peer_threshold, anomaly_avg_packets_threshold, volume_threshold_bytes,
 		ai_enabled, ai_provider, ai_base_url, ai_api_key, ai_model,
 		kafka_enabled, kafka_brokers, kafka_topic, kafka_sasl_username, kafka_sasl_password, kafka_tls, kafka_flow_topk,
 		sql_audit_enabled, sql_audit_max_per_tick, weak_auth_enabled
-		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.DBFlowTopK, dto.TopKPerBucket,
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		lang, dto.RefreshIntervalMs, persistScanAlerts, dto.GeoViewMode, dto.GeoSwitchIntervalSec, dto.DBFlowTopK, dto.TopKPerBucket,
 		anomalyEnabled, dto.AnomalyWindowSec, dto.AnomalyPeerThreshold, dto.AnomalyAvgPacketsThreshold, dto.VolumeThresholdBytes,
 		aiEnabled, dto.AIProvider, dto.AIBaseURL, dto.AIAPIKey, dto.AIModel,
 		kafkaEnabled, dto.KafkaBrokers, dto.KafkaTopic, dto.KafkaSASLUsername, dto.KafkaSASLPassword, kafkaTLS, dto.KafkaFlowTopK,
@@ -1358,12 +1404,6 @@ func (s *Store) writeLoop() {
 func (s *Store) writeTick(snap tickSnapshot) error {
 	ts := snap.start.Unix()
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
 	protoBytesJSON, err := marshalProtoMap(snap.protoBytes)
 	if err != nil {
 		return fmt.Errorf("marshal protoBytes: %w", err)
@@ -1372,30 +1412,45 @@ func (s *Store) writeTick(snap tickSnapshot) error {
 	if err != nil {
 		return fmt.Errorf("marshal protoPackets: %w", err)
 	}
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO bucket_summary(ts, distinct_flow_count, proto_bytes, proto_packets) VALUES (?, ?, ?, ?)`,
-		ts, snap.distinctFlowCount, protoBytesJSON, protoPacketsJSON); err != nil {
-		return fmt.Errorf("insert bucket_summary: %w", err)
-	}
 
-	if len(snap.scanAlerts) > 0 {
-		alertStmt, err := tx.Prepare(`INSERT INTO threat_alerts(ts, kind, ip, distinct_peers, volume_bytes) VALUES (?, ?, ?, ?, ?)`)
+	if err := func() error {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+
+		tx, err := s.db.Begin()
 		if err != nil {
 			return err
 		}
-		defer alertStmt.Close()
-		for _, a := range snap.scanAlerts {
-			ip, err := ipToUint32(a.IP)
+		defer tx.Rollback()
+
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO bucket_summary(ts, distinct_flow_count, proto_bytes, proto_packets) VALUES (?, ?, ?, ?)`,
+			ts, snap.distinctFlowCount, protoBytesJSON, protoPacketsJSON); err != nil {
+			return fmt.Errorf("insert bucket_summary: %w", err)
+		}
+
+		if len(snap.scanAlerts) > 0 {
+			alertStmt, err := tx.Prepare(`INSERT INTO threat_alerts(ts, kind, ip, distinct_peers, volume_bytes) VALUES (?, ?, ?, ?, ?)`)
 			if err != nil {
-				continue
+				return err
 			}
-			if _, err := alertStmt.Exec(ts, string(a.Kind), ip, a.DistinctPeers, a.VolumeBytes); err != nil {
-				return fmt.Errorf("insert threat_alerts: %w", err)
+			defer alertStmt.Close()
+			for _, a := range snap.scanAlerts {
+				ip, err := ipToUint32(a.IP)
+				if err != nil {
+					continue
+				}
+				if _, err := alertStmt.Exec(ts, string(a.Kind), ip, a.DistinctPeers, a.VolumeBytes); err != nil {
+					return fmt.Errorf("insert threat_alerts: %w", err)
+				}
 			}
 		}
-	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit bucket_summary/threat_alerts: %w", err)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit bucket_summary/threat_alerts: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
 
 	if err := s.ts.writeTick(ts, snap.flows, snap.ips, snap.ports, snap.portDPI); err != nil {
@@ -1458,23 +1513,28 @@ func (s *Store) retentionLoop() {
 func (s *Store) pruneOnce() {
 	cutoff := time.Now().Add(-s.retention).Unix()
 
-	tables := []string{"bucket_summary", "threat_alerts", "sql_audit_samples"}
-	if existing, err := tableNames(s.db); err == nil {
-		for _, legacy := range []string{"flow_samples", "ip_samples", "port_samples"} {
-			if existing[legacy] {
-				tables = append(tables, legacy)
+	func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+
+		tables := []string{"bucket_summary", "threat_alerts", "sql_audit_samples"}
+		if existing, err := tableNames(s.db); err == nil {
+			for _, legacy := range []string{"flow_samples", "ip_samples", "port_samples"} {
+				if existing[legacy] {
+					tables = append(tables, legacy)
+				}
 			}
 		}
-	}
-	for _, t := range tables {
-		if _, err := s.db.Exec(`DELETE FROM `+t+` WHERE ts < ?`, cutoff); err != nil {
-			log.Printf("store: prune %s failed: %v", t, err)
+		for _, t := range tables {
+			if _, err := s.db.Exec(`DELETE FROM `+t+` WHERE ts < ?`, cutoff); err != nil {
+				log.Printf("store: prune %s failed: %v", t, err)
+			}
 		}
-	}
-	if _, err := s.db.Exec(`PRAGMA incremental_vacuum`); err != nil {
-		log.Printf("store: incremental_vacuum failed: %v", err)
-	}
-	s.dropEmptyLegacySampleTablesOnce()
+		if _, err := s.db.Exec(`PRAGMA incremental_vacuum`); err != nil {
+			log.Printf("store: incremental_vacuum failed: %v", err)
+		}
+		s.dropEmptyLegacySampleTablesOnce()
+	}()
 
 	if err := s.ts.prune(time.Now().Add(-s.retention)); err != nil {
 		log.Printf("store: prune time-series store failed: %v", err)
@@ -1830,6 +1890,22 @@ func (s *Store) QueryReportRange(from, to time.Time, limit int) (Report, error) 
 		TopPorts:       topPorts,
 		TopDomains:     topDomains,
 	}, nil
+}
+
+func (s *Store) QueryReportTotals(from, to time.Time) (totalPackets, totalBytes uint64, activeFlows int, err error) {
+	cutoff, until := from.Unix(), to.Unix()
+
+	protoBytes, protoPackets, latestDistinctFlowCount, err := s.queryBucketSummary(cutoff, until)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("query bucket summary: %w", err)
+	}
+	for _, v := range protoPackets {
+		totalPackets += v
+	}
+	for _, v := range protoBytes {
+		totalBytes += v
+	}
+	return totalPackets, totalBytes, latestDistinctFlowCount, nil
 }
 
 func (s *Store) QueryTimeSeries(from, to time.Time) (Timeseries, error) {
@@ -2246,6 +2322,43 @@ func (s *Store) QueryThreatAlertsRange(from, to time.Time, page, pageSize int, f
 	return paginateSlice(matched, page, pageSize), len(matched), nil
 }
 
+type ThreatAlertStats struct {
+	Scan   int `json:"scan"`
+	DDoS   int `json:"ddos"`
+	Volume int `json:"volume"`
+	IOC    int `json:"ioc"`
+	Total  int `json:"total"`
+}
+
+func (s *Store) QueryThreatAlertStats(from, to time.Time) (ThreatAlertStats, error) {
+	cutoff, until := from.Unix(), to.Unix()
+	rows, err := s.db.Query(`SELECT kind, COUNT(*) FROM threat_alerts WHERE ts >= ? AND ts <= ? GROUP BY kind`, cutoff, until)
+	if err != nil {
+		return ThreatAlertStats{}, fmt.Errorf("query threat alert stats: %w", err)
+	}
+	defer rows.Close()
+	var st ThreatAlertStats
+	for rows.Next() {
+		var kind string
+		var n int
+		if err := rows.Scan(&kind, &n); err != nil {
+			return ThreatAlertStats{}, err
+		}
+		switch kind {
+		case string(AlertKindScan):
+			st.Scan = n
+		case string(AlertKindDDoS):
+			st.DDoS = n
+		case string(AlertKindVolume):
+			st.Volume = n
+		case string(AlertKindIOC):
+			st.IOC = n
+		}
+		st.Total += n
+	}
+	return st, rows.Err()
+}
+
 func scanThreatAlertRows(rows *sql.Rows) ([]ThreatAlertRecord, error) {
 	var out []ThreatAlertRecord
 	for rows.Next() {
@@ -2278,6 +2391,9 @@ func (s *Store) InsertSQLAuditRecords(records []SQLAuditRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin sql audit insert: %w", err)
@@ -2431,6 +2547,8 @@ type WeakAuthFindingDB struct {
 	SrcPort     int       `json:"srcPort"`
 	DstIP       string    `json:"dstIP"`
 	DstPort     int       `json:"dstPort"`
+	Proto       string    `json:"proto"`
+	Domain      string    `json:"domain,omitempty"`
 	Username    string    `json:"username"`
 	MatchedRule string    `json:"matchedRule"`
 	Confidence  string    `json:"confidence"`
@@ -2441,11 +2559,14 @@ func (s *Store) InsertWeakAuthFindings(findings []WeakAuthFinding, key []byte) e
 	if len(findings) == 0 {
 		return nil
 	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin weak auth insert: %w", err)
 	}
-	stmt, err := tx.Prepare(`INSERT INTO weak_auth_findings(ts, src_ip, src_port, dst_ip, dst_port, username, password_enc, matched_rule, confidence, status_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO weak_auth_findings(ts, src_ip, src_port, dst_ip, dst_port, proto, domain, username, password_enc, matched_rule, confidence, status_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("prepare weak auth insert: %w", err)
@@ -2457,7 +2578,7 @@ func (s *Store) InsertWeakAuthFindings(findings []WeakAuthFinding, key []byte) e
 			tx.Rollback()
 			return fmt.Errorf("encrypt weak auth password: %w", err)
 		}
-		if _, err := stmt.Exec(f.Time.Unix(), f.SrcIP, f.SrcPort, f.DstIP, f.DstPort, f.Username, enc, f.MatchedRule, f.Confidence, f.StatusCode); err != nil {
+		if _, err := stmt.Exec(f.Time.Unix(), f.SrcIP, f.SrcPort, f.DstIP, f.DstPort, f.Proto, f.Domain, f.Username, enc, f.MatchedRule, f.Confidence, f.StatusCode); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("insert weak auth finding: %w", err)
 		}
@@ -2465,7 +2586,7 @@ func (s *Store) InsertWeakAuthFindings(findings []WeakAuthFinding, key []byte) e
 	return tx.Commit()
 }
 
-func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, q string, page, pageSize int) ([]WeakAuthFindingDB, int, error) {
+func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, proto, q string, page, pageSize int) ([]WeakAuthFindingDB, int, error) {
 	if page < 0 {
 		page = 0
 	}
@@ -2479,6 +2600,10 @@ func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, q str
 		where += " AND confidence = ?"
 		args = append(args, confidence)
 	}
+	if proto != "" {
+		where += " AND proto = ?"
+		args = append(args, proto)
+	}
 	if q != "" {
 		like := "%" + q + "%"
 		where += " AND (" + sqliteIPOctetExpr("src_ip") + " LIKE ? OR " + sqliteIPOctetExpr("dst_ip") + " LIKE ? OR username LIKE ?)"
@@ -2491,7 +2616,7 @@ func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, q str
 	}
 
 	qArgs := append(append([]any{}, args...), pageSize, page*pageSize)
-	rows, err := s.db.Query(`SELECT id, ts, src_ip, src_port, dst_ip, dst_port, username, matched_rule, confidence, status_code FROM weak_auth_findings WHERE `+where+` ORDER BY ts DESC LIMIT ? OFFSET ?`, qArgs...)
+	rows, err := s.db.Query(`SELECT id, ts, src_ip, src_port, dst_ip, dst_port, proto, domain, username, matched_rule, confidence, status_code FROM weak_auth_findings WHERE `+where+` ORDER BY ts DESC LIMIT ? OFFSET ?`, qArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query weak auth findings: %w", err)
 	}
@@ -2502,18 +2627,92 @@ func (s *Store) QueryWeakAuthFindingsPaged(from, to time.Time, confidence, q str
 		var id, srcPort, dstPort, statusCode int
 		var ts int64
 		var srcIP, dstIP uint32
-		var username, matchedRule, confidenceVal string
-		if err := rows.Scan(&id, &ts, &srcIP, &srcPort, &dstIP, &dstPort, &username, &matchedRule, &confidenceVal, &statusCode); err != nil {
+		var protoVal, domainVal, username, matchedRule, confidenceVal string
+		if err := rows.Scan(&id, &ts, &srcIP, &srcPort, &dstIP, &dstPort, &protoVal, &domainVal, &username, &matchedRule, &confidenceVal, &statusCode); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, WeakAuthFindingDB{
 			ID: id, Time: time.Unix(ts, 0),
 			SrcIP: ipString(srcIP), SrcPort: srcPort,
 			DstIP: ipString(dstIP), DstPort: dstPort,
-			Username: username, MatchedRule: matchedRule, Confidence: confidenceVal, StatusCode: statusCode,
+			Proto: protoVal, Domain: domainVal, Username: username, MatchedRule: matchedRule, Confidence: confidenceVal, StatusCode: statusCode,
 		})
 	}
 	return out, total, rows.Err()
+}
+
+func (s *Store) UpsertServiceFingerprint(ip uint32, port uint16, value string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO service_fingerprints(ip, port, value, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(ip, port) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+	`, ip, port, value, time.Now().Unix())
+	return err
+}
+
+func (s *Store) LoadServiceFingerprints() ([]ServiceFingerprintRow, error) {
+	rows, err := s.db.Query(`SELECT ip, port, value FROM service_fingerprints`)
+	if err != nil {
+		return nil, fmt.Errorf("load service fingerprints: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ServiceFingerprintRow
+	for rows.Next() {
+		var r ServiceFingerprintRow
+		if err := rows.Scan(&r.IP, &r.Port, &r.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) QueryServiceFingerprintsByIP(ip uint32) ([]ServiceFingerprint, error) {
+	rows, err := s.db.Query(`SELECT port, value FROM service_fingerprints WHERE ip = ? ORDER BY port`, ip)
+	if err != nil {
+		return nil, fmt.Errorf("query service fingerprints: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ServiceFingerprint
+	for rows.Next() {
+		var f ServiceFingerprint
+		if err := rows.Scan(&f.Port, &f.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) QueryServiceFingerprintsForIPs(ips []uint32) (map[uint32][]ServiceFingerprint, error) {
+	if len(ips) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ips))
+	args := make([]any, len(ips))
+	for i, ip := range ips {
+		placeholders[i] = "?"
+		args[i] = ip
+	}
+	rows, err := s.db.Query(`SELECT ip, port, value FROM service_fingerprints WHERE ip IN (`+strings.Join(placeholders, ",")+`) ORDER BY ip, port`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query service fingerprints for ips: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[uint32][]ServiceFingerprint{}
+	for rows.Next() {
+		var ip uint32
+		var f ServiceFingerprint
+		if err := rows.Scan(&ip, &f.Port, &f.Value); err != nil {
+			return nil, err
+		}
+		out[ip] = append(out[ip], f)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) RevealWeakAuthPassword(id int, key []byte) (string, error) {

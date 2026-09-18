@@ -17,7 +17,7 @@ export function IPsRanking({ items }: { items: IPStat[] }) {
         labelFn={(ip) => ip.label || ip.ip}
         titleFn={(ip) => (ip.label ? `${ip.label} (${ip.ip})` : ip.ip)}
         renderLabel={(ip) => <AssetLabel label={ip.label} value={ip.ip} />}
-        color="#35e0ff"
+        color="#4FD0C0"
       />
     </div>
   )

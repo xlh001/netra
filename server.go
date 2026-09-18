@@ -98,6 +98,16 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		// regardless of DB speed, see project memory for why.
 		report.ScanAlerts = agg.threatAlerts()
 		report.Window = windowParam
+
+		prevTo := to.Add(-24 * time.Hour)
+		prevPackets, prevBytes, prevFlows, err := store.QueryReportTotals(prevTo.Add(-window), prevTo)
+		if err != nil {
+			log.Printf("report: prev-day totals query failed: %v", err)
+		} else {
+			report.PrevDayTotalPackets = prevPackets
+			report.PrevDayTotalBytes = prevBytes
+			report.PrevDayActiveFlows = prevFlows
+		}
 		annotateCountries(geoDB, &report)
 		annotateOrgs(asnDB, &report)
 		annotateIPTagsReport(ipTags, &report)
@@ -138,14 +148,13 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 	})))
 	mux.Handle("/api/geo", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		windowParam := r.URL.Query().Get("window")
-		window, err := parseWindow(windowParam)
+		from, to, err := parseRange(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		const geoCandidates = 500
-		to := time.Now()
-		candidates, err := store.QueryTopIPsInRange(to.Add(-window), to, geoCandidates)
+		candidates, err := store.QueryTopIPsInRange(from, to, geoCandidates)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -156,6 +165,14 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		if err := json.NewEncoder(w).Encode(report); err != nil {
 			log.Printf("encode geo report: %v", err)
 		}
+	})))
+	mux.Handle("/api/ifaces", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		generic, ifaces := mon.ifacesSnapshot()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			XDPGenericMode bool          `json:"xdpGenericMode"`
+			Ifaces         []IfaceStatus `json:"ifaces"`
+		}{generic, ifaces})
 	})))
 	mux.Handle("/api/topology", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		windowParam := r.URL.Query().Get("window")
@@ -195,6 +212,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			return
 		}
 		annotateIPTagsFlows(ipTags, flows)
+		annotateFingerprintsFlows(store, flows)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(struct {
 			Total int        `json:"total"`
@@ -223,6 +241,18 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		profile.Org = resolveOrg(asnDB, ip)
 		annotateIPTagsAlerts(ipTags, profile.Alerts)
 		annotateIOCAlerts(iocList, profile.Alerts)
+		ipNum, ipErr := ipToUint32(ip)
+		if ipErr != nil {
+			log.Printf("ip profile: fingerprint lookup skipped, ipToUint32(%q) failed: %v", ip, ipErr)
+		} else {
+			fps, fpErr := store.QueryServiceFingerprintsByIP(ipNum)
+			if fpErr != nil {
+				log.Printf("ip profile: fingerprint query failed for %q (ipNum=%d): %v", ip, ipNum, fpErr)
+			} else {
+				log.Printf("ip profile: fingerprint query for %q (ipNum=%d) returned %d row(s)", ip, ipNum, len(fps))
+				profile.Fingerprints = fps
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(profile)
 	})))
@@ -243,6 +273,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			return
 		}
 		annotateIPTagsIPs(ipTags, ips)
+		annotateFingerprintsIPs(store, ips)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(struct {
 			Total int      `json:"total"`
@@ -333,6 +364,23 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 		}{total, page, alerts})
 	})))
 
+	mux.Handle("/api/admin/threat-stats", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, to, err := parseRange(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		stats, err := store.QueryThreatAlertStats(from, to)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(stats); err != nil {
+			log.Printf("encode threat stats: %v", err)
+		}
+	})))
+
 	mux.Handle("DELETE /api/admin/sql-audit", adminOnly(func(w http.ResponseWriter, r *http.Request) {
 		if err := store.ClearSQLAuditSamples(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -376,7 +424,7 @@ func startWebServer(addr string, agg *aggregator, geoDB *geoip2.Reader, asnDB *g
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		findings, total, err := store.QueryWeakAuthFindingsPaged(from, to, r.URL.Query().Get("confidence"), r.URL.Query().Get("q"), page, pageSize)
+		findings, total, err := store.QueryWeakAuthFindingsPaged(from, to, r.URL.Query().Get("confidence"), r.URL.Query().Get("proto"), r.URL.Query().Get("q"), page, pageSize)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1400,6 +1448,14 @@ func parsePaging(r *http.Request) (page, pageSize int, err error) {
 func validateConfig(dto ConfigDTO) error {
 	if dto.RefreshIntervalMs <= 0 {
 		return fmt.Errorf("refreshIntervalMs must be positive, got %d", dto.RefreshIntervalMs)
+	}
+	switch dto.GeoViewMode {
+	case GeoViewAuto, GeoViewWorld, GeoViewTopo:
+	default:
+		return fmt.Errorf("geoViewMode must be one of auto/world/topo, got %q", dto.GeoViewMode)
+	}
+	if dto.GeoSwitchIntervalSec <= 0 {
+		return fmt.Errorf("geoSwitchIntervalSec must be positive, got %d", dto.GeoSwitchIntervalSec)
 	}
 	if dto.DBFlowTopK <= 0 {
 		return fmt.Errorf("dbFlowTopK must be positive, got %d", dto.DBFlowTopK)

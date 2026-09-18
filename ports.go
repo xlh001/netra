@@ -186,22 +186,22 @@ var serviceCategories = map[string]string{
 }
 
 var serviceCategoryLabelsEN = map[string]string{
-	"数据库":       "Database",
-	"远程管理":     "Remote Access",
-	"文件传输":     "File Transfer",
-	"邮件":         "Mail",
-	"目录服务":     "Directory",
+	"数据库":    "Database",
+	"远程管理":   "Remote Access",
+	"文件传输":   "File Transfer",
+	"邮件":     "Mail",
+	"目录服务":   "Directory",
 	"网络基础设施": "Network Infra",
-	"消息队列":     "Messaging",
-	"语音通信":     "Voice/VoIP",
-	"容器/云原生":  "Cloud-Native",
-	"监控/日志":    "Monitoring",
-	"大数据/计算":  "Big Data",
-	"工控/物联网":  "ICS/IoT",
-	"开发工具":     "Dev Tools",
-	"虚拟化":       "Virtualization",
-	"企业应用":     "Enterprise Apps",
-	"其他":         "Other",
+	"消息队列":   "Messaging",
+	"语音通信":   "Voice/VoIP",
+	"容器/云原生": "Cloud-Native",
+	"监控/日志":  "Monitoring",
+	"大数据/计算": "Big Data",
+	"工控/物联网": "ICS/IoT",
+	"开发工具":   "Dev Tools",
+	"虚拟化":    "Virtualization",
+	"企业应用":   "Enterprise Apps",
+	"其他":     "Other",
 }
 
 func categoryLabel(cat, lang string) string {

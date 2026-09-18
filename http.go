@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"log"
 	"net"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
@@ -13,7 +15,7 @@ import (
 
 const httpEventHeaderLen = 16
 
-func startHTTPReader(m *ebpf.Map, onDomain func(key xdpflowFlowKey, hostname string)) (*ringbuf.Reader, error) {
+func startHTTPReader(m *ebpf.Map, onDomain func(key xdpflowFlowKey, hostname string), onServerFingerprint func(saddr uint32, sport uint16, value string)) (*ringbuf.Reader, error) {
 	reader, err := ringbuf.NewReader(m)
 	if err != nil {
 		return nil, err
@@ -30,19 +32,19 @@ func startHTTPReader(m *ebpf.Map, onDomain func(key xdpflowFlowKey, hostname str
 				}
 				return
 			}
-			handleHTTPEventSafely(record.RawSample, onDomain)
+			handleHTTPEventSafely(record.RawSample, onDomain, onServerFingerprint)
 		}
 	}()
 
 	return reader, nil
 }
 
-func handleHTTPEventSafely(raw []byte, onDomain func(key xdpflowFlowKey, hostname string)) {
+func handleHTTPEventSafely(raw []byte, onDomain func(key xdpflowFlowKey, hostname string), onServerFingerprint func(saddr uint32, sport uint16, value string)) {
 	defer recoverAndLog("http event handler")
-	handleHTTPEvent(raw, onDomain)
+	handleHTTPEvent(raw, onDomain, onServerFingerprint)
 }
 
-func handleHTTPEvent(raw []byte, onDomain func(key xdpflowFlowKey, hostname string)) {
+func handleHTTPEvent(raw []byte, onDomain func(key xdpflowFlowKey, hostname string), onServerFingerprint func(saddr uint32, sport uint16, value string)) {
 	if len(raw) < httpEventHeaderLen {
 		return
 	}
@@ -57,13 +59,17 @@ func handleHTTPEvent(raw []byte, onDomain func(key xdpflowFlowKey, hostname stri
 		payload = payload[:payloadLen]
 	}
 
-	hostname, ok := parseHTTPHostHeader(payload)
-	if !ok || hostname == "" {
-		return
+	if hostname, ok := parseHTTPHostHeader(payload); ok && hostname != "" {
+		key := xdpflowFlowKey{Saddr: saddr, Daddr: daddr, Sport: sport, Dport: dport, Proto: tcpProto}
+		onDomain(key, hostname)
 	}
 
-	key := xdpflowFlowKey{Saddr: saddr, Daddr: daddr, Sport: sport, Dport: dport, Proto: 6}
-	onDomain(key, hostname)
+	if bytes.HasPrefix(payload, []byte("HTTP/")) {
+		if value := extractHeader(payload, "Server"); value != "" {
+			realSport := binary.BigEndian.Uint16(raw[8:10])
+			onServerFingerprint(saddr, realSport, value)
+		}
+	}
 }
 
 func parseHTTPHostHeader(b []byte) (string, bool) {
@@ -82,6 +88,9 @@ func parseHTTPHostHeader(b []byte) (string, bool) {
 		}
 		if len(line) > len(prefix) && strings.EqualFold(line[:len(prefix)], prefix) {
 			host := strings.TrimSpace(line[len(prefix):])
+			if !utf8.ValidString(host) || !looksLikeHostname(host) {
+				return "", false
+			}
 			if isIPLiteral(host) {
 
 				return "", false
@@ -91,6 +100,27 @@ func parseHTTPHostHeader(b []byte) (string, bool) {
 	}
 
 	return "", false
+}
+
+func looksLikeHostname(h string) bool {
+	if len(h) < 2 {
+		return false
+	}
+	hasLetterOrDigit := false
+	for _, r := range h {
+		switch {
+		case r >= 'a' && r <= 'z':
+			hasLetterOrDigit = true
+		case r >= 'A' && r <= 'Z':
+			hasLetterOrDigit = true
+		case r >= '0' && r <= '9':
+			hasLetterOrDigit = true
+		case r == '.' || r == '-' || r == ':' || r == '[' || r == ']':
+		default:
+			return false
+		}
+	}
+	return hasLetterOrDigit
 }
 
 func isIPLiteral(host string) bool {

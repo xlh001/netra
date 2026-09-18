@@ -139,6 +139,19 @@ export function IPProfileDrawer({ ip, open, onClose }: { ip?: string; open: bool
             </div>
           </div>
 
+          {data.fingerprints && data.fingerprints.length > 0 && (
+            <>
+              <h3 className="ip-profile-section-title">{t('ipProfileFingerprints')}</h3>
+              <div className="ip-profile-section-card ip-profile-badges">
+                {data.fingerprints.map((f) => (
+                  <span className="asset-pill" key={f.port}>
+                    {f.port}: {f.value}
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+
           <h3 className="ip-profile-section-title">{t('ipProfileTrend')}</h3>
           <div className="ip-profile-section-card">
             <IPProfileTrend trend={trend} />
@@ -149,7 +162,7 @@ export function IPProfileDrawer({ ip, open, onClose }: { ip?: string; open: bool
               <div className="ip-profile-col-title">{t('ipProfilePeers', { n: 10, total: data.peerCount })}</div>
               {topPeers.length === 0 && <Empty description={t('noDataShort')} image={Empty.PRESENTED_IMAGE_SIMPLE} />}
               {topPeers.map((p) => (
-                <BarRow key={p.peer} label={p.peer} bytes={p.bytes} maxBytes={maxPeerBytes} fill="rgba(53,224,255,0.16)" />
+                <BarRow key={p.peer} label={p.peer} bytes={p.bytes} maxBytes={maxPeerBytes} fill="rgba(79,208,192,0.16)" />
               ))}
             </div>
             <div className="ip-profile-section-card">
